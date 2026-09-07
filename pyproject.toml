@@ -1,0 +1,29 @@
+[project]
+name = "python-system-lab"
+version = "0.1.0"
+description = "Small, tested experiments in Python behavior"
+requires-python = ">=3.11"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "pytest>=8,<9",
+    "ruff>=0.11,<1",
+    "mypy>=1.15,<2",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["generator_execution.py", "tests"]
