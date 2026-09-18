@@ -11,6 +11,7 @@ Requires Python 3.11 or newer. The experiments use only the standard library:
 ```sh
 python generator_execution.py
 python generator_cleanup.py
+python streaming_csv.py
 ```
 
 For tests and development tools, create a virtual environment:
@@ -169,4 +170,85 @@ The trace list grows with events; no memory or throughput benchmark is claimed.
 References: [generator methods](https://docs.python.org/3/reference/expressions.html#generator-iterator-methods)
 and [contextlib.closing](https://docs.python.org/3/library/contextlib.html#contextlib.closing).
 
-Next experiment: apply explicit resource ownership to a streaming CSV reader.
+## Application: validated streaming CSV records
+
+`streaming_csv.read_records(stream)` applies caller-owned resource management to
+CSV ingestion. It yields dictionaries of strings using the standard-library CSV
+parser. The caller opens and closes the text stream:
+
+```python
+from pathlib import Path
+from streaming_csv import read_records
+
+path = Path("records.csv")
+with path.open(encoding="utf-8", newline="") as stream:
+    for record in read_records(stream):
+        print(record)
+        break
+```
+
+The file closes when the caller's context exits, including on consumer failure.
+Closing the parsing generator does **not** close the supplied stream. Consume the
+iterator within the resource's context; a retained iterator can otherwise try to
+read a closed file. The reader uses the stream's current position and never seeks.
+
+### Validation contract
+
+- The first logical record is the header. Empty input is an error; a header-only
+  file is valid and yields no data records.
+- Header names must be nonblank and exactly unique. Whitespace and case are
+  preserved; `id`, `ID`, and ` id` are distinct. There is no required domain schema.
+- Every data record must have the header's field count. Blank physical rows
+  outside quoted fields are rejected as zero-field records, not silently skipped.
+- Empty field values are valid strings. Values are not stripped or converted.
+- The parser uses the default Excel dialect with `strict=True`. It handles quoted
+  commas, doubled quotes, and embedded newlines. Strict mode reports the parser's
+  recognized syntax errors; it is not a comprehensive RFC-conformance validator.
+- Syntax and structure failures raise `CsvValidationError`, with `record_number`
+  and `line_number` attributes. Records count from 1, including the header. The
+  physical line is the last line consumed by the parser for that record or error,
+  relative to this reader; it is 0 for empty input. It is not a byte offset or a
+  field column. Underlying CSV errors are preserved as exception causes.
+- Validation is deferred until iteration. Valid earlier records have already been
+  delivered when a later record fails. Failure terminates this iterator; it does
+  not roll back consumer side effects or offer a skip-and-resume mode.
+- I/O errors and decoding errors propagate unchanged. Callers choose encoding;
+  UTF-8 with a BOM requires an appropriate encoding such as `utf-8-sig` if the BOM
+  should be removed. No encoding or dialect detection is performed.
+
+Run `python streaming_csv.py` for a self-contained example:
+
+```text
+{'id': '1', 'note': 'hello, world'}
+{'id': '2', 'note': 'two\nlines'}
+record 4, physical line 5: expected 2 fields, got 1
+inside caller context, closed: False
+after caller context, closed: True
+```
+
+The tests include real files with CRLF and non-ASCII content, invalid headers,
+unequal row widths, parser errors, quoted multiline fields, and early consumer
+exit. An in-memory stream-position check verifies that requesting one record consumes only its
+header and required physical lines, leaving later records unread by the parser.
+Text I/O may still buffer bytes beneath that interface.
+
+### Decisions and limits
+
+`csv.reader` plus explicit width checks prevents silent truncation when building
+dictionaries. `DictReader` normally represents missing or surplus fields rather
+than rejecting their rows; this experiment chooses fail-fast validation instead.
+Header validation prevents duplicate names from silently overwriting values.
+
+The iterator retains the header and current record rather than accumulating all
+records. A single large record or a consumer collecting results can still use
+substantial memory, and the CSV parser's field-size limit still applies. No memory
+or throughput measurements have been made. The iterator is intended for one
+consumer; it does not introduce parallel processing, retries, or database writes.
+
+Be ready to explain who closes the stream, why record numbers differ from physical
+line numbers, and how partial success changes retry or transaction design.
+
+Reference: [Python CSV documentation](https://docs.python.org/3/library/csv.html).
+
+Next experiment: measure streaming versus eager CSV loading with reproducible
+inputs and explicitly stated memory-measurement limits.
