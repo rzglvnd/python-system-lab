@@ -1,0 +1,179 @@
+{
+  "schema_version": 1,
+  "recorded_at_utc": "2026-09-22T14:41:34.406036+00:00",
+  "environment": {
+    "python": "3.13.7 (tags/v3.13.7:bcee1c3, Aug 14 2025, 14:15:11) [MSC v.1944 64 bit (AMD64)]",
+    "implementation": "CPython",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "machine": "AMD64",
+    "processor": "Intel64 Family 6 Model 154 Stepping 3, GenuineIntel"
+  },
+  "metric": "peak bytes traced by tracemalloc; not process RSS",
+  "repetitions": 3,
+  "datasets": [
+    {
+      "rows": 1000,
+      "file_bytes": 38015,
+      "sha256": "499643c7cb44c325ff8610f68322d69ca9bc161b513f9c07d59931dcf1e65b99",
+      "expected_checksum": "2557bb0264249724eb5b9fe37e73b8b9d7cbfb05585a0528c5589a61bb8ad581"
+    },
+    {
+      "rows": 10000,
+      "file_bytes": 380015,
+      "sha256": "8d1eb692a8d010049210715bf9446f53b2db2b5c2fcbdb61131c86ebc4745c0e",
+      "expected_checksum": "dc060fd1266cf68b59f99db8bfe751b758f33dfd570e6c293fbf60cca823e4e5"
+    },
+    {
+      "rows": 100000,
+      "file_bytes": 3800015,
+      "sha256": "18c27ddc95495c7d94a08ba01e498bd88ab2de29bdc3a784f589c21aaa7df37a",
+      "expected_checksum": "95a4649ad516758e53a2a47d624776bbe848e2402b63ff91a202d5f62147e283"
+    }
+  ],
+  "trials": [
+    {
+      "repetition": 1,
+      "mode": "streaming",
+      "count": 1000,
+      "checksum": "2557bb0264249724eb5b9fe37e73b8b9d7cbfb05585a0528c5589a61bb8ad581",
+      "peak_bytes": 55714,
+      "pid": 32712
+    },
+    {
+      "repetition": 1,
+      "mode": "eager",
+      "count": 1000,
+      "checksum": "2557bb0264249724eb5b9fe37e73b8b9d7cbfb05585a0528c5589a61bb8ad581",
+      "peak_bytes": 394467,
+      "pid": 27532
+    },
+    {
+      "repetition": 2,
+      "mode": "eager",
+      "count": 1000,
+      "checksum": "2557bb0264249724eb5b9fe37e73b8b9d7cbfb05585a0528c5589a61bb8ad581",
+      "peak_bytes": 394467,
+      "pid": 6308
+    },
+    {
+      "repetition": 2,
+      "mode": "streaming",
+      "count": 1000,
+      "checksum": "2557bb0264249724eb5b9fe37e73b8b9d7cbfb05585a0528c5589a61bb8ad581",
+      "peak_bytes": 55714,
+      "pid": 27456
+    },
+    {
+      "repetition": 3,
+      "mode": "streaming",
+      "count": 1000,
+      "checksum": "2557bb0264249724eb5b9fe37e73b8b9d7cbfb05585a0528c5589a61bb8ad581",
+      "peak_bytes": 55714,
+      "pid": 32844
+    },
+    {
+      "repetition": 3,
+      "mode": "eager",
+      "count": 1000,
+      "checksum": "2557bb0264249724eb5b9fe37e73b8b9d7cbfb05585a0528c5589a61bb8ad581",
+      "peak_bytes": 394467,
+      "pid": 30424
+    },
+    {
+      "repetition": 1,
+      "mode": "streaming",
+      "count": 10000,
+      "checksum": "dc060fd1266cf68b59f99db8bfe751b758f33dfd570e6c293fbf60cca823e4e5",
+      "peak_bytes": 64044,
+      "pid": 33412
+    },
+    {
+      "repetition": 1,
+      "mode": "eager",
+      "count": 10000,
+      "checksum": "dc060fd1266cf68b59f99db8bfe751b758f33dfd570e6c293fbf60cca823e4e5",
+      "peak_bytes": 3647789,
+      "pid": 14100
+    },
+    {
+      "repetition": 2,
+      "mode": "eager",
+      "count": 10000,
+      "checksum": "dc060fd1266cf68b59f99db8bfe751b758f33dfd570e6c293fbf60cca823e4e5",
+      "peak_bytes": 3647789,
+      "pid": 33460
+    },
+    {
+      "repetition": 2,
+      "mode": "streaming",
+      "count": 10000,
+      "checksum": "dc060fd1266cf68b59f99db8bfe751b758f33dfd570e6c293fbf60cca823e4e5",
+      "peak_bytes": 64044,
+      "pid": 33972
+    },
+    {
+      "repetition": 3,
+      "mode": "streaming",
+      "count": 10000,
+      "checksum": "dc060fd1266cf68b59f99db8bfe751b758f33dfd570e6c293fbf60cca823e4e5",
+      "peak_bytes": 64044,
+      "pid": 31872
+    },
+    {
+      "repetition": 3,
+      "mode": "eager",
+      "count": 10000,
+      "checksum": "dc060fd1266cf68b59f99db8bfe751b758f33dfd570e6c293fbf60cca823e4e5",
+      "peak_bytes": 3647789,
+      "pid": 33404
+    },
+    {
+      "repetition": 1,
+      "mode": "streaming",
+      "count": 100000,
+      "checksum": "95a4649ad516758e53a2a47d624776bbe848e2402b63ff91a202d5f62147e283",
+      "peak_bytes": 64046,
+      "pid": 3392
+    },
+    {
+      "repetition": 1,
+      "mode": "eager",
+      "count": 100000,
+      "checksum": "95a4649ad516758e53a2a47d624776bbe848e2402b63ff91a202d5f62147e283",
+      "peak_bytes": 36133599,
+      "pid": 34536
+    },
+    {
+      "repetition": 2,
+      "mode": "eager",
+      "count": 100000,
+      "checksum": "95a4649ad516758e53a2a47d624776bbe848e2402b63ff91a202d5f62147e283",
+      "peak_bytes": 36133599,
+      "pid": 16500
+    },
+    {
+      "repetition": 2,
+      "mode": "streaming",
+      "count": 100000,
+      "checksum": "95a4649ad516758e53a2a47d624776bbe848e2402b63ff91a202d5f62147e283",
+      "peak_bytes": 64046,
+      "pid": 32116
+    },
+    {
+      "repetition": 3,
+      "mode": "streaming",
+      "count": 100000,
+      "checksum": "95a4649ad516758e53a2a47d624776bbe848e2402b63ff91a202d5f62147e283",
+      "peak_bytes": 64046,
+      "pid": 28352
+    },
+    {
+      "repetition": 3,
+      "mode": "eager",
+      "count": 100000,
+      "checksum": "95a4649ad516758e53a2a47d624776bbe848e2402b63ff91a202d5f62147e283",
+      "peak_bytes": 36133599,
+      "pid": 27740
+    }
+  ]
+}

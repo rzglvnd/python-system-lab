@@ -241,8 +241,9 @@ Header validation prevents duplicate names from silently overwriting values.
 
 The iterator retains the header and current record rather than accumulating all
 records. A single large record or a consumer collecting results can still use
-substantial memory, and the CSV parser's field-size limit still applies. No memory
-or throughput measurements have been made. The iterator is intended for one
+substantial memory, and the CSV parser's field-size limit still applies. A measured
+comparison for a fixed-width dataset is linked below; throughput is unmeasured.
+The iterator is intended for one
 consumer; it does not introduce parallel processing, retries, or database writes.
 
 Be ready to explain who closes the stream, why record numbers differ from physical
@@ -250,5 +251,23 @@ line numbers, and how partial success changes retry or transaction design.
 
 Reference: [Python CSV documentation](https://docs.python.org/3/library/csv.html).
 
-Next experiment: measure streaming versus eager CSV loading with reproducible
-inputs and explicitly stated memory-measurement limits.
+## Measurement: streaming versus eager CSV loading
+
+Run isolated allocation measurements with:
+
+```sh
+python benchmark_csv.py run --sizes 1000 10000 100000 --repetitions 3
+```
+
+Each trial runs in a fresh interpreter and uses the same parser and aggregation.
+The runner validates every output count and checksum. It reports peak traced
+Python allocations, not total process RAM, and does not measure throughput.
+
+See the [measured report](reports/csv-memory-2026-09-22.md) for the methodology,
+environment, actual results, and limitations, plus [all raw trials](reports/csv-memory-2026-09-22.json).
+At 100,000 fixed-width records, the measured peak was 64,046 bytes for streaming
+and 36,133,599 bytes for eager loading. These observations apply to the tested
+input and consumer; they are not general memory guarantees.
+
+Next experiment: vary individual CSV record width to examine how large records
+affect the streaming allocation peak.

@@ -26,4 +26,4 @@ select = ["E", "F", "I", "B", "UP"]
 [tool.mypy]
 python_version = "3.11"
 strict = true
-files = ["generator_execution.py", "generator_cleanup.py", "streaming_csv.py", "tests"]
+files = ["generator_execution.py", "generator_cleanup.py", "streaming_csv.py", "benchmark_csv.py", "tests"]
