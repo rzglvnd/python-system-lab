@@ -19,6 +19,7 @@ from typing import Literal
 from streaming_csv import read_records
 
 Mode = Literal["streaming", "eager"]
+BASE_NOTE = 'alpha, "beta"\ncafé'
 
 
 @dataclass(frozen=True)
@@ -49,17 +50,21 @@ def summarize(records: Iterable[dict[str, str]]) -> Summary:
     return Summary(count, digest.hexdigest())
 
 
-def generate_dataset(path: Path, rows: int) -> Summary:
-    """Write deterministic UTF-8 CSV, outside workers' measurement windows."""
-    if rows < 0:
-        raise ValueError("rows must be nonnegative")
+def generate_dataset(
+    path: Path, rows: int, note_width: int = len(BASE_NOTE)
+) -> Summary:
+    """Write UTF-8 CSV with note_width Unicode code points, outside measurement."""
+    if rows < 0 or note_width < 0:
+        raise ValueError("rows and note_width must be nonnegative")
+    repeats = (note_width + len(BASE_NOTE) - 1) // len(BASE_NOTE)
+    note = (BASE_NOTE * repeats)[:note_width]
 
     def records() -> Iterable[dict[str, str]]:
         for index in range(rows):
             yield {
                 "id": f"{index:09d}",
                 "amount": f"{index % 1000:03d}",
-                "note": 'alpha, "beta"\ncafé',
+                "note": note,
             }
 
     with path.open("w", encoding="utf-8", newline="") as stream:
@@ -91,56 +96,69 @@ def measure(path: Path, mode: Mode) -> Measurement:
     return Measurement(mode, summary.count, summary.checksum, peak, os.getpid())
 
 
-def run_benchmark(sizes: list[int], repetitions: int) -> dict[str, object]:
+def run_benchmark(
+    sizes: list[int], repetitions: int, widths: list[int] | None = None
+) -> dict[str, object]:
     """Generate inputs once, then launch one fresh interpreter per trial."""
-    if not sizes or any(size <= 0 for size in sizes) or repetitions <= 0:
-        raise ValueError("sizes and repetitions must be positive")
+    widths = [len(BASE_NOTE)] if widths is None else widths
+    if (
+        not sizes
+        or any(size <= 0 for size in sizes)
+        or not widths
+        or any(width < 0 for width in widths)
+        or repetitions <= 0
+    ):
+        raise ValueError(
+            "sizes and widths must be positive/nonnegative and repetitions positive"
+        )
     trials: list[dict[str, object]] = []
     datasets: list[dict[str, object]] = []
     with TemporaryDirectory(prefix="csv-memory-") as directory:
         for rows in sizes:
-            path = Path(directory) / f"{rows}.csv"
-            expected = generate_dataset(path, rows)
-            with path.open("rb") as stream:
-                file_hash = hashlib.file_digest(stream, "sha256").hexdigest()
-            datasets.append(
-                {
-                    "rows": rows,
-                    "file_bytes": path.stat().st_size,
-                    "sha256": file_hash,
-                    "expected_checksum": expected.checksum,
-                }
-            )
-            for repetition in range(1, repetitions + 1):
-                modes: tuple[Mode, Mode] = ("streaming", "eager")
-                if repetition % 2 == 0:
-                    modes = ("eager", "streaming")
-                for mode in modes:
-                    completed = subprocess.run(
-                        [
-                            sys.executable,
-                            str(Path(__file__).resolve()),
-                            "worker",
-                            str(path),
-                            mode,
-                        ],
-                        check=True,
-                        capture_output=True,
-                        text=True,
-                        encoding="utf-8",
-                        timeout=180,
-                    )
-                    result = Measurement(**json.loads(completed.stdout))
-                    if (
-                        result.mode != mode
-                        or result.count != expected.count
-                        or result.checksum != expected.checksum
-                        or result.peak_bytes < 0
-                    ):
-                        raise RuntimeError(
-                            "worker result failed correctness validation"
+            for note_width in widths:
+                path = Path(directory) / f"{rows}-{note_width}.csv"
+                expected = generate_dataset(path, rows, note_width)
+                with path.open("rb") as stream:
+                    file_hash = hashlib.file_digest(stream, "sha256").hexdigest()
+                datasets.append(
+                    {
+                        "rows": rows,
+                        "note_width": note_width,
+                        "file_bytes": path.stat().st_size,
+                        "sha256": file_hash,
+                        "expected_checksum": expected.checksum,
+                    }
+                )
+                for repetition in range(1, repetitions + 1):
+                    modes: tuple[Mode, Mode] = ("streaming", "eager")
+                    if repetition % 2 == 0:
+                        modes = ("eager", "streaming")
+                    for mode in modes:
+                        completed = subprocess.run(
+                            [
+                                sys.executable,
+                                str(Path(__file__).resolve()),
+                                "worker",
+                                str(path),
+                                mode,
+                            ],
+                            check=True,
+                            capture_output=True,
+                            text=True,
+                            encoding="utf-8",
+                            timeout=180,
                         )
-                    trials.append({"repetition": repetition, **asdict(result)})
+                        result = Measurement(**json.loads(completed.stdout))
+                        if (
+                            result.mode != mode
+                            or result.count != expected.count
+                            or result.checksum != expected.checksum
+                            or result.peak_bytes < 0
+                        ):
+                            raise RuntimeError(
+                                "worker result failed correctness validation"
+                            )
+                        trials.append({"repetition": repetition, **asdict(result)})
     return {
         "schema_version": 1,
         "recorded_at_utc": datetime.now(UTC).isoformat(),
@@ -163,6 +181,13 @@ def main() -> None:
     commands = parser.add_subparsers(dest="command", required=True)
     run = commands.add_parser("run", help="run isolated trials")
     run.add_argument("--sizes", type=int, nargs="+", default=[1000, 10000, 100000])
+    run.add_argument(
+        "--widths",
+        type=int,
+        nargs="+",
+        default=[len(BASE_NOTE)],
+        help="note field lengths in Unicode code points, not encoded bytes",
+    )
     run.add_argument("--repetitions", type=int, default=3)
     run.add_argument("--output", type=Path, help="JSON file; otherwise print to stdout")
     worker = commands.add_parser("worker", help="measure one trial in this process")
@@ -172,9 +197,18 @@ def main() -> None:
     if args.command == "worker":
         print(json.dumps(asdict(measure(args.path, args.mode))))
         return
-    if any(size <= 0 for size in args.sizes) or args.repetitions <= 0:
-        parser.error("sizes and repetitions must be positive")
-    report = json.dumps(run_benchmark(args.sizes, args.repetitions), indent=2) + "\n"
+    if (
+        any(size <= 0 for size in args.sizes)
+        or any(width < 0 for width in args.widths)
+        or args.repetitions <= 0
+    ):
+        parser.error(
+            "sizes must be positive, widths nonnegative, and repetitions positive"
+        )
+    report = (
+        json.dumps(run_benchmark(args.sizes, args.repetitions, args.widths), indent=2)
+        + "\n"
+    )
     if args.output is None:
         print(report, end="")
     else:

@@ -269,5 +269,22 @@ At 100,000 fixed-width records, the measured peak was 64,046 bytes for streaming
 and 36,133,599 bytes for eager loading. These observations apply to the tested
 input and consumer; they are not general memory guarantees.
 
-Next experiment: vary individual CSV record width to examine how large records
-affect the streaming allocation peak.
+## Measurement: individual CSV record width
+
+Run the width matrix with:
+
+```sh
+python benchmark_csv.py run --sizes 1000 --widths 16 1024 16384 65536 --repetitions 3
+```
+
+The [width report](reports/csv-width-2026-09-25.md) records actual results and
+limitations, with [raw trials](reports/csv-width-2026-09-25.json). At 1,000 rows,
+streaming peaked at 47,411 bytes for a 16-character note and 659,665 bytes for a
+65,536-character note; eager loading peaked at 375,993 and 66,196,346 bytes. This
+shows that streaming avoids cross-row retention but still pays for the current
+logical record, parser buffers, and checksum aggregation. Here characters mean
+Unicode code points; UTF-8 byte length differs for non-ASCII text. These peak
+measurements do not isolate the allocation cost of each stage.
+
+The benchmark keeps widths below the default CSV field-size limit. Next experiment:
+test that limit and document the failure contract for oversized fields.
