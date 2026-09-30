@@ -7,7 +7,7 @@ from typing import TextIO
 
 
 class CsvValidationError(ValueError):
-    """A CSV syntax or structure error with logical and physical location."""
+    """A CSV parsing or structure error with logical and physical location."""
 
     def __init__(self, record_number: int, line_number: int, reason: str) -> None:
         self.record_number = record_number
@@ -35,7 +35,7 @@ def read_records(stream: TextIO) -> Generator[dict[str, str], None, None]:
             return
         except csv.Error as error:
             raise CsvValidationError(
-                record_number, reader.line_num, f"CSV syntax error: {error}"
+                record_number, reader.line_num, f"CSV parsing error: {error}"
             ) from error
 
         if header is None:

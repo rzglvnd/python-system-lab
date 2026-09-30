@@ -204,7 +204,8 @@ read a closed file. The reader uses the stream's current position and never seek
 - The parser uses the default Excel dialect with `strict=True`. It handles quoted
   commas, doubled quotes, and embedded newlines. Strict mode reports the parser's
   recognized syntax errors; it is not a comprehensive RFC-conformance validator.
-- Syntax and structure failures raise `CsvValidationError`, with `record_number`
+- Parsing failures (including field-size limits) and structure failures raise
+  `CsvValidationError`, with `record_number`
   and `line_number` attributes. Records count from 1, including the header. The
   physical line is the last line consumed by the parser for that record or error,
   relative to this reader; it is 0 for empty input. It is not a byte offset or a
@@ -286,5 +287,66 @@ logical record, parser buffers, and checksum aggregation. Here characters mean
 Unicode code points; UTF-8 byte length differs for non-ASCII text. These peak
 measurements do not isolate the allocation cost of each stage.
 
-The benchmark keeps widths below the default CSV field-size limit. Next experiment:
-test that limit and document the failure contract for oversized fields.
+The benchmark keeps widths below the default CSV field-size limit. Boundary and
+failure behavior are covered by the following tests.
+
+## Failure contract: oversized CSV fields
+
+Run the focused tests with:
+
+```sh
+python -m pytest tests/test_streaming_csv.py -q -k "limit or oversized"
+```
+
+Tests use a controlled limit of eight decoded Unicode code points per field.
+They cover lengths seven, eight, and nine for ASCII, `é`, and quoted multiline
+values. Eight is accepted; nine raises `CsvValidationError` with the original
+`csv.Error` preserved in `__cause__`. UTF-8 byte length differs from this decoded
+field length. Embedded newlines count toward the field; CSV quoting syntax does
+not. The same limit applies to header fields.
+
+The wrapper now says `CSV parsing error` rather than `CSV syntax error`, because
+a well-formed field can exceed the configured limit. The exception class and
+location attributes are unchanged. Callers should not depend on exact underlying
+CSV error text, which comes from the Python runtime.
+
+An oversized multiline field after a valid record demonstrates partial success:
+the valid record remains delivered, the failed iterator terminates, and no later
+record is emitted. `record_number` identifies the logical record including the
+header; `line_number` identifies the last physical line supplied to the parser
+when it detects failure, not necessarily the end of the rejected record. There
+is no automatic retry, resynchronization, or rollback of consumer side effects.
+
+The reader still leaves the input stream open. A caller's surrounding `with`
+closes it when an error propagates, as verified with a real temporary UTF-8 file.
+
+### Configuration ownership
+
+`csv.field_size_limit()` is shared configuration for the CSV module in the Python
+interpreter. It is not a constructor option for an individual reader. A test
+starts two readers, changes the limit, and confirms that both observe the new
+value when reading their next fields.
+
+The application should choose a limit before parsing starts and keep it stable
+while readers are active. A reusable generator should not temporarily change it
+across yields: unrelated readers may run while that generator is suspended.
+Restoring a setting later does not provide isolation for concurrent readers.
+Different ingestion policies may require separate worker processes.
+
+The test fixture saves the original value and restores it in `finally`, including
+after failures. Tests using it assume serial execution within each interpreter;
+they do not change application defaults or introduce a per-reader limit API.
+
+### What this limit does not guarantee
+
+A record can contain many individually valid fields. A test accepts a record
+whose combined values exceed the per-field limit. Text I/O buffers and the
+physical line supplied to the parser also consume memory before field validation,
+and consumers can retain arbitrary numbers of records. This limit alone therefore
+does not bound total record size, file size, process memory, or ingestion work.
+
+The previous memory reports remain unchanged: these are deterministic boundary
+tests, not new allocation measurements. This completes the CSV sequence's current
+scope: execution, cleanup, validation, measured retention, and size-limit failures.
+
+Reference: [csv.field_size_limit](https://docs.python.org/3/library/csv.html#csv.field_size_limit).

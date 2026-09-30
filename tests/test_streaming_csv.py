@@ -1,4 +1,5 @@
 import csv
+from collections.abc import Iterator
 from io import StringIO
 from pathlib import Path
 
@@ -76,7 +77,7 @@ def test_csv_syntax_errors_preserve_cause_and_location(
     contents: str, record: int, line: int
 ) -> None:
     with StringIO(contents) as stream:
-        with pytest.raises(CsvValidationError, match="CSV syntax error") as caught:
+        with pytest.raises(CsvValidationError, match="CSV parsing error") as caught:
             list(read_records(stream))
         assert isinstance(caught.value.__cause__, csv.Error)
         assert caught.value.record_number == record
@@ -125,3 +126,98 @@ def test_caller_context_closes_real_file_on_early_exit(
     finally:
         records.close()
         stream.close()
+
+
+@pytest.fixture
+def small_field_limit() -> Iterator[int]:
+    """Change shared parser configuration only for this serial test's lifetime."""
+    previous = csv.field_size_limit()
+    try:
+        csv.field_size_limit(8)
+        yield 8
+    finally:
+        csv.field_size_limit(previous)
+
+
+@pytest.mark.parametrize("size", [7, 8, 9])
+@pytest.mark.parametrize("kind", ["ascii", "unicode", "multiline"])
+def test_field_limit_boundary(small_field_limit: int, size: int, kind: str) -> None:
+    if kind == "ascii":
+        value = "a" * size
+    elif kind == "unicode":
+        value = "é" * size
+        assert len(value.encode("utf-8")) > small_field_limit
+    else:
+        value = "abc\n" + "x" * (size - 4)
+    with StringIO(newline="") as stream:
+        writer = csv.writer(stream, lineterminator="\n")
+        writer.writerow(["note"])
+        writer.writerow([value])
+        stream.seek(0)
+        records = read_records(stream)
+        if size <= small_field_limit:
+            assert list(records) == [{"note": value}]
+        else:
+            with pytest.raises(CsvValidationError, match="CSV parsing error") as caught:
+                next(records)
+            assert isinstance(caught.value.__cause__, csv.Error)
+            assert "field larger than field limit" in str(caught.value.__cause__)
+            assert caught.value.record_number == 2
+            assert caught.value.line_number == (3 if kind == "multiline" else 2)
+            with pytest.raises(StopIteration):
+                next(records)
+        assert not stream.closed
+
+
+def test_oversized_field_after_partial_success_closes_caller_file(
+    tmp_path: Path, small_field_limit: int
+) -> None:
+    path = tmp_path / "oversized.csv"
+    with path.open("w", encoding="utf-8", newline="") as output:
+        writer = csv.writer(output, lineterminator="\n")
+        writer.writerows(
+            [["id", "note"], ["1", "ok"], ["2", "éééé\néééé"], ["3", "later"]]
+        )
+    delivered: list[dict[str, str]] = []
+    with pytest.raises(CsvValidationError) as caught:
+        with path.open(encoding="utf-8", newline="") as stream:
+            records = read_records(stream)
+            for record in records:
+                delivered.append(record)
+    assert stream.closed
+    assert delivered == [{"id": "1", "note": "ok"}]
+    assert caught.value.record_number == 3
+    assert caught.value.line_number == 4
+    assert isinstance(caught.value.__cause__, csv.Error)
+    with pytest.raises(StopIteration):
+        next(records)
+
+
+def test_field_limit_also_applies_to_header(small_field_limit: int) -> None:
+    with StringIO("h" * (small_field_limit + 1) + "\nvalue\n") as stream:
+        with pytest.raises(CsvValidationError) as caught:
+            next(read_records(stream))
+        assert caught.value.record_number == 1
+        assert caught.value.line_number == 1
+        assert isinstance(caught.value.__cause__, csv.Error)
+
+
+def test_field_limit_is_not_a_total_record_limit(small_field_limit: int) -> None:
+    value = "x" * small_field_limit
+    with StringIO(f"a,b,c\n{value},{value},{value}\n") as stream:
+        assert list(read_records(stream)) == [{"a": value, "b": value, "c": value}]
+
+
+def test_limit_change_affects_already_started_readers(small_field_limit: int) -> None:
+    value = "x" * small_field_limit
+    with StringIO(f"note\nok\n{value}\n") as first_stream:
+        with StringIO(f"note\nok\n{value}\n") as second_stream:
+            first = read_records(first_stream)
+            second = read_records(second_stream)
+            assert next(first) == next(second) == {"note": "ok"}
+            # This is module-level configuration, not a per-reader setting.
+            csv.field_size_limit(4)
+            for records in (first, second):
+                with pytest.raises(CsvValidationError) as caught:
+                    next(records)
+                assert isinstance(caught.value.__cause__, csv.Error)
