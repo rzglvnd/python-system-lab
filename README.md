@@ -350,3 +350,43 @@ tests, not new allocation measurements. This completes the CSV sequence's curren
 scope: execution, cleanup, validation, measured retention, and size-limit failures.
 
 Reference: [csv.field_size_limit](https://docs.python.org/3/library/csv.html#csv.field_size_limit).
+
+## Async experiment: TaskGroup failure propagation and cleanup
+
+`taskgroup_failure.py` coordinates two workers with `asyncio.Event` objects, so
+the experiment does not depend on sleeps or race-prone timing. Both workers begin
+and wait for the same release event. The failing worker raises a `RuntimeError`;
+`asyncio.TaskGroup` cancels the sibling, waits for its cleanup, and raises the
+non-cancellation failure as an exception group.
+
+Run it with:
+
+```sh
+python taskgroup_failure.py
+```
+
+The lifecycle is observable through events:
+
+```text
+failing:started, sibling:started
+failing:raising, sibling:working
+sibling:cancelled, sibling:cleanup, failing:cleanup
+failures: ['failing failed']
+```
+
+The precise interleaving of the two initial workers may vary, but these facts are
+invariants: both start before release; the sibling receives cancellation; both
+cleanup blocks run; the cancellation is re-raised; and the original failure is
+reported. `CancelledError` is a control signal used by structured concurrency,
+not a normal success result. Swallowing it would prevent reliable cancellation
+and can make a task group hang or misreport its state.
+
+The tests use `asyncio.run`, coordination events, and a direct caller cancellation.
+They do not use sleep-based timing or assert wall-clock behavior. The failing task
+does not undo work already performed by its sibling; cancellation is cooperative
+and reaches the sibling at its next await point. `finally` is the right place for
+resource cleanup, but cleanup itself must be cancellation-aware.
+
+This experiment does not demonstrate retries, timeouts, process termination,
+thread safety, or transactional rollback. The next async experiment should test
+caller cancellation of an entire task group.
