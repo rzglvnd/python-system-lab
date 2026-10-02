@@ -25,7 +25,9 @@ def test_worker_propagates_cancellation_after_cleanup() -> None:
         proceed = asyncio.Event()
         working = asyncio.Event()
         events: list[str] = []
-        task = asyncio.create_task(worker("one", ready, proceed, events, working=working))
+        task = asyncio.create_task(
+            worker("one", ready, proceed, events, working=working)
+        )
         await ready.wait()
         proceed.set()
         await working.wait()

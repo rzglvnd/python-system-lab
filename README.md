@@ -390,3 +390,12 @@ resource cleanup, but cleanup itself must be cancellation-aware.
 This experiment does not demonstrate retries, timeouts, process termination,
 thread safety, or transactional rollback. The next async experiment should test
 caller cancellation of an entire task group.
+
+## Caller cancellation of a TaskGroup
+
+Run `python taskgroup_cancellation.py`. The coordinator waits until both workers
+are running before cancelling their parent. Both children propagate cancellation
+and complete their `finally` blocks before the caller observes `CancelledError`.
+A normal-completion test also verifies that releasing the workers does not cancel
+them. Cancellation requests shutdown; awaiting the parent observes its completion.
+This models request or job cancellation, not process termination or rollback.
