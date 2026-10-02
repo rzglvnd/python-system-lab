@@ -416,3 +416,22 @@ This experiment covers one cancellation request, not repeated cancellation durin
 cleanup or simultaneous worker failure and external cancellation.
 
 Reference: [Python timeout contexts](https://docs.python.org/3.11/library/asyncio-task.html#timeouts).
+
+## Asynchronous cleanup delays completion
+
+`tests/test_taskgroup_async_cleanup.py` holds a worker inside an awaited cleanup
+operation. For both caller cancellation and deadline expiration, the test proves
+that the parent is still pending after cleanup begins. Only releasing the cleanup
+gate lets the parent report `CancelledError` or `TimeoutError`. The gate is released
+in a `finally` block so an assertion failure does not leave the worker blocked.
+
+A timeout triggers cooperative cancellation; it is not a hard upper bound on
+execution time. A stuck cleanup operation can delay shutdown indefinitely. Real
+services must choose a cleanup policy and account for external resources and
+process-level termination. These tests do not implement that policy or promise
+that cleanup survives a second cancellation request.
+
+Interview checkpoint: explain why cancelling a task and awaiting its termination
+are separate steps, why cancellation should propagate after cleanup, and why a
+request deadline alone cannot guarantee a bounded shutdown. A useful next experiment
+would examine a second cancellation arriving while asynchronous cleanup is pending.
