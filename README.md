@@ -399,3 +399,20 @@ and complete their `finally` blocks before the caller observes `CancelledError`.
 A normal-completion test also verifies that releasing the workers does not cancel
 them. Cancellation requests shutdown; awaiting the parent observes its completion.
 This models request or job cancellation, not process termination or rollback.
+
+## TaskGroup deadlines
+
+Run `python taskgroup_deadline.py`. After both workers start, the experiment
+reschedules an `asyncio.timeout` deadline into the past. Expiration is delivered
+on a subsequent event-loop iteration, without a sleep or a narrow timing window.
+The deadline cancels its current task; cancellation propagates through the awaited
+parent to the children. The caller catches `TimeoutError` outside the timeout
+context only after the workers finish cleanup. The success test releases both
+workers under a distant deadline. No elapsed-time assertion is involved.
+
+The local suppression of the child's `CancelledError` in the ownership fallback
+only drains that child; cancellation of the coordinator continues to propagate.
+This experiment covers one cancellation request, not repeated cancellation during
+cleanup or simultaneous worker failure and external cancellation.
+
+Reference: [Python timeout contexts](https://docs.python.org/3.11/library/asyncio-task.html#timeouts).
