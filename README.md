@@ -435,3 +435,16 @@ Interview checkpoint: explain why cancelling a task and awaiting its termination
 are separate steps, why cancellation should propagate after cleanup, and why a
 request deadline alone cannot guarantee a bounded shutdown. A useful next experiment
 would examine a second cancellation arriving while asynchronous cleanup is pending.
+
+## Repeated cancellation during cleanup
+
+Run `python repeated_cancellation.py`. The first direct cancellation enters the
+worker's `finally` block. An event confirms the worker is awaiting cleanup before
+the coordinator directly cancels that same worker again. The second cancellation
+interrupts cleanup; entering `finally` does not guarantee finishing it. A control
+test releases cleanup after only one cancellation and observes completion followed
+by the original `CancelledError`. Both paths use event coordination, not sleeps.
+
+This deliberately targets the worker itself. It does not claim that cancelling a
+TaskGroup's parent twice is equivalent to cancelling a child twice. No external
+resource is modified, and no rollback or process-termination guarantee is implied.
