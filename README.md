@@ -448,3 +448,19 @@ by the original `CancelledError`. Both paths use event coordination, not sleeps.
 This deliberately targets the worker itself. It does not claim that cancelling a
 TaskGroup's parent twice is equivalent to cancelling a child twice. No external
 resource is modified, and no rollback or process-termination guarantee is implied.
+
+## Shielding and explicit task ownership
+
+Run `python shielded_cleanup.py` to compare a plain await with `asyncio.shield`.
+Cancelling the caller interrupts cleanup through a plain await. With shielding,
+the caller still receives `CancelledError`, but cleanup remains pending. A separate
+supervisor retains the cleanup task, releases it, and awaits its result. A failure
+in cleanup reaches that supervisor rather than becoming an unobserved exception.
+
+Shielding changes cancellation propagation, not ownership. It does not protect
+against direct cancellation of the cleanup task, guarantee successful cleanup,
+or bound shutdown time. This example assumes a supervisor that lives long enough
+to join the task; it is not a general solution for repeated supervisor cancellation.
+Retaining the task and observing its result are essential parts of the design.
+
+Reference: [Shielding from cancellation](https://docs.python.org/3.11/library/asyncio-task.html#shielding-from-cancellation).
