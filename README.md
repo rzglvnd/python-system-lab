@@ -464,3 +464,24 @@ to join the task; it is not a general solution for repeated supervisor cancellat
 Retaining the task and observing its result are essential parts of the design.
 
 Reference: [Shielding from cancellation](https://docs.python.org/3.11/library/asyncio-task.html#shielding-from-cancellation).
+
+## Cleanup can fail too
+
+`tests/test_taskgroup_cleanup_failure.py` starts three workers before releasing a
+work failure. One cancelled sibling optionally raises `ValueError` in cleanup;
+the other records successful cleanup. Tests verify that the group reports both
+the original `RuntimeError` and the cleanup error, and waits for the remaining
+sibling. The control case reports only the work error. Assertions compare exception
+types and messages without depending on sibling execution or exception ordering.
+
+The cleanup exception replaces cancellation as that sibling's outcome. TaskGroup
+collects the non-cancellation failures into an `ExceptionGroup`; cancellation alone
+is not added to that group. This preserves the failure from a different worker,
+but does not prove that a cleanup exception can never mask an earlier exception
+inside the same worker. The experiment covers a flat group and synchronous cleanup
+failure, not nested groups or simultaneous external cancellation.
+
+Interview checkpoint: distinguish entering cleanup from completing it; explain
+who owns a shielded task, who observes its failure, and which errors a TaskGroup
+reports. The next practical step is choosing an explicit shutdown policy for a
+small background worker, including what to do when cleanup cannot finish.
