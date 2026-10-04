@@ -485,3 +485,9 @@ Interview checkpoint: distinguish entering cleanup from completing it; explain
 who owns a shielded task, who observes its failure, and which errors a TaskGroup
 reports. The next practical step is choosing an explicit shutdown policy for a
 small background worker, including what to do when cleanup cannot finish.
+
+## Queued worker shutdown
+
+`python queued_worker.py` applies these cancellation concepts to one in-memory
+worker. See [the shutdown contract](docs/worker_shutdown.md) for admission rules,
+tests, and limitations.
