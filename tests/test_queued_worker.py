@@ -201,3 +201,91 @@ def test_caller_cancellation_joins_worker_and_propagates() -> None:
         assert not report.grace_expired
 
     asyncio.run(scenario())
+
+
+def test_failed_job_does_not_stop_drain_or_count_as_success() -> None:
+    async def scenario() -> None:
+        async def handle(job: str) -> None:
+            if job == "bad":
+                raise ValueError("invalid job")
+
+        worker = QueuedWorker(handle)
+        worker.start()
+        worker.submit("bad")
+        worker.submit("good")
+        report = await worker.shutdown()
+        assert report.completed == ("good",)
+        assert [(f.job, f.error_type, f.message) for f in report.failed] == [
+            ("bad", "ValueError", "invalid job")
+        ]
+        assert report.interrupted == report.unstarted == ()
+        # White-box check of queue accounting, not a success criterion for jobs.
+        await asyncio.wait_for(worker._queue.join(), timeout=1)
+        assert await worker.shutdown() == report
+
+    asyncio.run(scenario())
+
+
+def test_each_accepted_job_has_exactly_one_outcome() -> None:
+    async def scenario() -> None:
+        running = asyncio.Event()
+
+        async def handle(job: str) -> None:
+            if job == "bad":
+                raise RuntimeError("job failed")
+            if job == "blocked":
+                running.set()
+                await asyncio.Event().wait()
+
+        worker = QueuedWorker(handle)
+        worker.start()
+        accepted = ["good", "bad", "blocked", "queued"]
+        for job in accepted:
+            worker.submit(job)
+        await running.wait()
+        report = await worker.shutdown(grace_period=0)
+        assert report.completed == ("good",)
+        assert [failure.job for failure in report.failed] == ["bad"]
+        assert report.interrupted == ("blocked",)
+        assert report.unstarted == ("queued",)
+        outcomes = [
+            *report.completed,
+            *(failure.job for failure in report.failed),
+            *report.interrupted,
+            *report.unstarted,
+        ]
+        assert sorted(outcomes) == sorted(accepted)
+        await asyncio.wait_for(worker._queue.join(), timeout=1)
+
+    asyncio.run(scenario())
+
+
+def test_cleanup_failure_after_deadline_does_not_start_next_job() -> None:
+    async def scenario() -> None:
+        running = asyncio.Event()
+        seen: list[str] = []
+
+        async def handle(job: str) -> None:
+            seen.append(job)
+            running.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                raise ValueError("cleanup failed")
+
+        worker = QueuedWorker(handle)
+        worker.start()
+        worker.submit("running")
+        worker.submit("queued")
+        await running.wait()
+        report = await worker.shutdown(grace_period=0)
+        assert seen == ["running"]
+        assert report.completed == report.interrupted == ()
+        assert [(f.job, f.message) for f in report.failed] == [
+            ("running", "cleanup failed")
+        ]
+        assert report.unstarted == ("queued",)
+        assert report.grace_expired
+        await asyncio.wait_for(worker._queue.join(), timeout=1)
+
+    asyncio.run(scenario())

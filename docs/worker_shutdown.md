@@ -13,7 +13,8 @@ use `close()` when admission must stop immediately, before awaiting shutdown.
 
 Tests hold the first handler at an event, close admission, and verify that both
 accepted jobs still complete in order. Empty shutdown and invalid lifecycle calls
-are also covered. Handler exceptions currently propagate to the shutdown caller.
+are also covered. Ordinary handler exceptions are recorded as failed jobs; the
+worker continues to the next job while draining. Cancellation propagates instead.
 
 This is an in-memory experiment with an unbounded queue and retained job IDs and
 outcomes. It has no persistence, retry, backpressure, restart, or process-signal
@@ -40,3 +41,30 @@ limits draining, not cleanup: a handler that ignores cancellation or blocks the
 event loop can prevent shutdown indefinitely. Repeated supervisor cancellation is
 outside this contract. Interrupted jobs may already have external side effects;
 this report cannot tell you whether retrying them would duplicate those effects.
+
+## Failure policy and accounting
+
+Ordinary `Exception` failures are recorded by job ID, exception type name, and
+message, then draining continues. The report's `failed` entries do not retain
+tracebacks. `CancelledError` remains a separate interrupted outcome. If a handler
+raises a cleanup error while cancellation is unwinding, that job is failed instead
+of interrupted. After an abort request, no next job starts even if the current
+handler replaces or suppresses cancellation. A handler that suppresses cancellation
+and returns is classified as completed; the worker cannot infer its business result.
+
+Tests combine a completed job, a failure, an interrupted job, and an unstarted job
+and verify that the report accounts for every accepted identifier exactly once.
+They also check queue accounting after failures and discarded work. `task_done()`
+is called for every retrieved item (including the stop marker and discarded jobs),
+so queue `join()` completion alone does not mean successful processing. The tests'
+one-second join guard only detects a bookkeeping hang; no timing result is asserted.
+
+This policy treats jobs as independent. It is inappropriate for a workflow where
+one failure should invalidate subsequent jobs. `BaseException` subclasses other
+than cancellation are not converted into ordinary failed-job reports. Error messages
+may include handler-provided data and need review before publishing or logging.
+
+Interview checkpoint: explain the synchronous admission boundary, grace period
+versus a hard execution limit, why queue accounting is separate from job outcomes,
+and why retrying interrupted work requires an idempotency policy. A useful next
+experiment is bounded admission and backpressure; durable recovery remains separate.

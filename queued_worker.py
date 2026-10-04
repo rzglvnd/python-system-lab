@@ -7,8 +7,16 @@ from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
+class JobFailure:
+    job: str
+    error_type: str
+    message: str
+
+
+@dataclass(frozen=True)
 class ShutdownReport:
     completed: tuple[str, ...]
+    failed: tuple[JobFailure, ...]
     interrupted: tuple[str, ...]
     unstarted: tuple[str, ...]
     grace_expired: bool
@@ -24,10 +32,12 @@ class QueuedWorker:
         self._closing = False
         self._accepted: set[str] = set()
         self._completed: list[str] = []
+        self._failed: list[JobFailure] = []
         self._interrupted: list[str] = []
         self._unstarted: list[str] = []
         self._grace_expired = False
         self._shutting_down = False
+        self._abort_requested = False
 
     def start(self) -> None:
         if self._task is not None:
@@ -70,6 +80,7 @@ class QueuedWorker:
                 done, _ = await asyncio.wait({self._task}, timeout=grace_period)
                 if not done:
                     self._grace_expired = True
+                    self._abort_requested = True
                     self._task.cancel()
                     try:
                         await self._task
@@ -79,6 +90,7 @@ class QueuedWorker:
                     await self._task
         except asyncio.CancelledError:
             # A cancelled supervisor still joins the worker before propagating.
+            self._abort_requested = True
             self._task.cancel()
             try:
                 await self._task
@@ -91,6 +103,7 @@ class QueuedWorker:
             self._shutting_down = False
         return ShutdownReport(
             tuple(self._completed),
+            tuple(self._failed),
             tuple(self._interrupted),
             tuple(self._unstarted),
             self._grace_expired,
@@ -104,7 +117,7 @@ class QueuedWorker:
             self._queue.task_done()
 
     async def _run(self) -> None:
-        while True:
+        while not self._abort_requested:
             job = await self._queue.get()
             try:
                 if job is None:
@@ -114,7 +127,12 @@ class QueuedWorker:
                 except asyncio.CancelledError:
                     self._interrupted.append(job)
                     raise
-                self._completed.append(job)
+                except Exception as error:
+                    self._failed.append(
+                        JobFailure(job, type(error).__name__, str(error))
+                    )
+                else:
+                    self._completed.append(job)
             finally:
                 self._queue.task_done()
 
