@@ -84,3 +84,22 @@ worker while checking FIFO completion and rejection accounting.
 
 This bounds the count of waiting jobs. Accepted identifiers, outcome history,
 job size, and producer task count still contribute to memory use.
+
+## Waiting producers
+
+`await worker.submit_wait(job)` waits when capacity is full, while `submit(job)`
+still rejects immediately. Acceptance happens when the job is enqueued, before
+the method returns; waiting alone does not accept a job or reserve its identifier.
+Duplicate identifiers are checked again when a producer wakes.
+
+A broadcast event signals capacity changes, closure, or worker termination.
+Every awakened producer rechecks admission and capacity before enqueuing, with no
+await in that final check-and-enqueue operation. Capturing the event after a full
+check also contains no await, avoiding a missed notification. Closing wakes all
+waiters with an admission error. Cancelling a producer suspended on capacity does
+not enqueue its job. The interface adds no helper tasks requiring separate cleanup.
+
+Wake-up ordering and producer fairness are unspecified: synchronous producers may
+take capacity before a waiting producer resumes. Producers should await submissions
+in sequence; spawning unlimited waiting tasks would still permit unbounded memory
+use. Callers can impose their own timeout on admission, separate from job execution.

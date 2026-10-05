@@ -48,11 +48,13 @@ class QueuedWorker:
         self._grace_expired = False
         self._shutting_down = False
         self._abort_requested = False
+        self._admission_changed = asyncio.Event()
 
     def start(self) -> None:
         if self._task is not None:
             raise RuntimeError("worker already started")
         self._task = asyncio.create_task(self._run())
+        self._task.add_done_callback(lambda task: self._notify_admission())
 
     def submit(self, job: str) -> None:
         if self._task is None or self._closing or self._task.done():
@@ -64,6 +66,22 @@ class QueuedWorker:
         self._queue.put_nowait(job)
         self._accepted.add(job)
 
+    async def submit_wait(self, job: str) -> None:
+        """Wait for capacity; acceptance occurs at submit()'s atomic enqueue."""
+        while True:
+            try:
+                self.submit(job)
+                return
+            except asyncio.QueueFull:
+                # No await occurs between checking capacity and subscribing.
+                changed = self._admission_changed
+            await changed.wait()
+
+    def _notify_admission(self) -> None:
+        """Broadcast a state change; every awakened producer must recheck."""
+        self._admission_changed.set()
+        self._admission_changed = asyncio.Event()
+
     def close(self) -> None:
         """Synchronously stop admission; place the stop marker after accepted work."""
         if self._task is None:
@@ -71,6 +89,7 @@ class QueuedWorker:
         if not self._closing:
             self._closing = True
             self._queue.put_nowait(None)
+            self._notify_admission()
 
     async def shutdown(self, grace_period: float | None = None) -> ShutdownReport:
         """Drain, then cancel on grace expiry; cancellation remains cooperative."""
@@ -131,6 +150,7 @@ class QueuedWorker:
     async def _run(self) -> None:
         while not self._abort_requested:
             job = await self._queue.get()
+            self._notify_admission()
             try:
                 if job is None:
                     return
