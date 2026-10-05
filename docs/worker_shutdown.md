@@ -103,3 +103,20 @@ Wake-up ordering and producer fairness are unspecified: synchronous producers ma
 take capacity before a waiting producer resumes. Producers should await submissions
 in sequence; spawning unlimited waiting tasks would still permit unbounded memory
 use. Callers can impose their own timeout on admission, separate from job execution.
+
+## Admission races during shutdown
+
+Tests coordinate two producers competing for a single free slot, including two
+producers requesting the same identifier. Exactly one is accepted. They also
+force closure or producer cancellation after a dequeue signals free capacity but
+before a waiting producer resumes. No new job enters in either case. A worker
+that terminates through cancellation wakes capacity waiters with an admission
+error, rather than leaving them indefinitely blocked.
+
+The ordering comes from event gates and synchronous handler actions. Five-second
+watchdogs detect hangs in these race tests; they are not performance measurements.
+A capacity notification is only permission to retry, not a reserved slot. Acceptance
+is the enqueue operation. Cancellation after acceptance cannot retract that job;
+applications needing stronger acknowledgement or retry guarantees require a
+separate protocol. The next useful experiment is choosing how much accepted-ID
+and outcome history to retain while preserving the report's meaning.
