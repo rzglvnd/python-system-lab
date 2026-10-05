@@ -16,8 +16,8 @@ accepted jobs still complete in order. Empty shutdown and invalid lifecycle call
 are also covered. Ordinary handler exceptions are recorded as failed jobs; the
 worker continues to the next job while draining. Cancellation propagates instead.
 
-This is an in-memory experiment with an unbounded queue and retained job IDs and
-outcomes. It has no persistence, retry, backpressure, restart, or process-signal
+This is an in-memory experiment with retained job IDs and outcomes.
+It has no persistence, retry, restart, or process-signal
 integration. Process failure loses queued work. A returned handler is considered
 successful; no claim is made about external transactions or exactly-once effects.
 
@@ -67,4 +67,20 @@ may include handler-provided data and need review before publishing or logging.
 Interview checkpoint: explain the synchronous admission boundary, grace period
 versus a hard execution limit, why queue accounting is separate from job outcomes,
 and why retrying interrupted work requires an idempotency policy. A useful next
-experiment is bounded admission and backpressure; durable recovery remains separate.
+experiment is bounding retained outcome history; durable recovery remains separate.
+
+## Bounded admission
+
+`QueuedWorker(handler, max_pending=N)` allows at most N waiting jobs plus the one
+currently running. The default zero preserves unbounded admission. Negative limits
+are rejected. `submit()` raises `asyncio.QueueFull` at capacity without recording
+that identifier as accepted. The producer can retry the same identifier later.
+
+One extra queue slot is reserved for the stop marker. Producers cannot use it;
+the synchronous admission check and enqueue contain no await. Thus `close()` can
+always stop admission even when waiting jobs fill their capacity. Tests hold the
+running job at an event, fill the backlog, reject excess work, and close the full
+worker while checking FIFO completion and rejection accounting.
+
+This bounds the count of waiting jobs. Accepted identifiers, outcome history,
+job size, and producer task count still contribute to memory use.

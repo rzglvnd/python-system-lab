@@ -25,9 +25,19 @@ class ShutdownReport:
 class QueuedWorker:
     """Use from one event loop; job strings are unique identifiers."""
 
-    def __init__(self, handler: Callable[[str], Awaitable[None]]) -> None:
+    def __init__(
+        self, handler: Callable[[str], Awaitable[None]], *, max_pending: int = 0
+    ) -> None:
+        if isinstance(max_pending, bool) or not isinstance(max_pending, int):
+            raise TypeError("max_pending must be an integer")
+        if max_pending < 0:
+            raise ValueError("max_pending must be nonnegative")
         self._handler = handler
-        self._queue: asyncio.Queue[str | None] = asyncio.Queue()
+        self._max_pending = max_pending
+        # Reserve a control slot so close() can enqueue its marker even at capacity.
+        self._queue: asyncio.Queue[str | None] = asyncio.Queue(
+            maxsize=max_pending + 1 if max_pending else 0
+        )
         self._task: asyncio.Task[None] | None = None
         self._closing = False
         self._accepted: set[str] = set()
@@ -49,6 +59,8 @@ class QueuedWorker:
             raise RuntimeError("worker is not accepting jobs")
         if job in self._accepted:
             raise ValueError("job identifiers must be unique")
+        if self._max_pending and self._queue.qsize() >= self._max_pending:
+            raise asyncio.QueueFull
         self._queue.put_nowait(job)
         self._accepted.add(job)
 
