@@ -1,6 +1,6 @@
 # A queued worker's shutdown contract
 
-Run `python queued_worker.py`. One worker consumes unique string job identifiers
+Run `python queued_worker.py`. One worker consumes string job identifiers
 in FIFO order. `start()` creates the owned task; synchronous `submit()` accepts
 work only while the worker is running and open. `close()` immediately rejects new
 submissions and adds a stop marker after accepted jobs. `shutdown()` closes and
@@ -134,6 +134,23 @@ during shutdown records new unstarted outcomes and can evict earlier failures.
 independently of detail retention. `omitted_outcomes` states how many details were
 omitted. Counts and details are immutable snapshots. For supported shutdown paths,
 accepted equals completed + failed + interrupted + unstarted. No count includes
-the stop marker or a rejected submission. This commit bounds outcome details;
-accepted identifiers still retain lifetime duplicate protection until the next
-change introduces eviction of identifiers alongside their outcome details.
+the stop marker or a rejected submission.
+
+## Identifier eviction and duplicate detection
+
+With limited history, duplicate detection covers queued jobs, the running job,
+and retained outcomes. When an outcome is evicted, its identifier is removed too.
+That identifier can then be submitted again, counting as another accepted
+submission. A zero limit forgets an identifier as soon as its outcome is recorded.
+The default unlimited history preserves lifetime duplicate rejection.
+
+Completed and failed jobs have the same eviction policy. No active identifier is
+forgotten before its outcome. This is a bounded duplicate-detection window by
+outcome count, not durable idempotency or a time-based expiry policy. Reusing an
+evicted identifier can repeat external side effects. Applications requiring
+durable duplicate protection need a separate persistent design.
+
+With finite history N and waiting capacity M, stored job identifiers are limited
+to at most N + M + 1 (retained outcomes, waiting jobs, and the running job).
+This bounds retained job references, not bytes: job/error strings, Python integer
+counters, caller-held reports, and waiting producer tasks have separate costs.

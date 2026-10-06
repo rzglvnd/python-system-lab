@@ -45,7 +45,7 @@ class ShutdownReport:
 
 
 class QueuedWorker:
-    """Use from one event loop; job strings are unique identifiers."""
+    """Use from one event loop; identifiers are unique among active/retained jobs."""
 
     def __init__(
         self,
@@ -71,7 +71,7 @@ class QueuedWorker:
         )
         self._task: asyncio.Task[None] | None = None
         self._closing = False
-        self._accepted: set[str] = set()
+        self._known_ids: set[str] = set()
         self._history: deque[_Outcome] = deque(maxlen=history_limit)
         self._accepted_count = 0
         self._counts: dict[OutcomeKind, int] = {
@@ -94,12 +94,14 @@ class QueuedWorker:
     def submit(self, job: str) -> None:
         if self._task is None or self._closing or self._task.done():
             raise RuntimeError("worker is not accepting jobs")
-        if job in self._accepted:
-            raise ValueError("job identifiers must be unique")
+        if job in self._known_ids:
+            raise ValueError(
+                "job identifiers must be unique among active and retained jobs"
+            )
         if self._max_pending and self._queue.qsize() >= self._max_pending:
             raise asyncio.QueueFull
         self._queue.put_nowait(job)
-        self._accepted.add(job)
+        self._known_ids.add(job)
         self._accepted_count += 1
 
     async def submit_wait(self, job: str) -> None:
@@ -188,6 +190,13 @@ class QueuedWorker:
         self, kind: OutcomeKind, job: str, failure: JobFailure | None = None
     ) -> None:
         self._counts[kind] += 1
+        if self._history.maxlen == 0:
+            self._known_ids.remove(job)
+        elif (
+            self._history.maxlen is not None
+            and len(self._history) == self._history.maxlen
+        ):
+            self._known_ids.remove(self._history[0].job)
         self._history.append(_Outcome(kind, job, failure))
 
     def _discard_pending(self) -> None:
