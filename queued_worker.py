@@ -2,8 +2,12 @@
 
 import asyncio
 import math
+from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from typing import Literal
+
+OutcomeKind = Literal["completed", "failed", "interrupted", "unstarted"]
 
 
 @dataclass(frozen=True)
@@ -14,24 +18,51 @@ class JobFailure:
 
 
 @dataclass(frozen=True)
+class OutcomeCounts:
+    accepted: int
+    completed: int
+    failed: int
+    interrupted: int
+    unstarted: int
+
+
+@dataclass(frozen=True)
+class _Outcome:
+    kind: OutcomeKind
+    job: str
+    failure: JobFailure | None = None
+
+
+@dataclass(frozen=True)
 class ShutdownReport:
     completed: tuple[str, ...]
     failed: tuple[JobFailure, ...]
     interrupted: tuple[str, ...]
     unstarted: tuple[str, ...]
     grace_expired: bool
+    counts: OutcomeCounts
+    omitted_outcomes: int
 
 
 class QueuedWorker:
     """Use from one event loop; job strings are unique identifiers."""
 
     def __init__(
-        self, handler: Callable[[str], Awaitable[None]], *, max_pending: int = 0
+        self,
+        handler: Callable[[str], Awaitable[None]],
+        *,
+        max_pending: int = 0,
+        history_limit: int | None = None,
     ) -> None:
         if isinstance(max_pending, bool) or not isinstance(max_pending, int):
             raise TypeError("max_pending must be an integer")
         if max_pending < 0:
             raise ValueError("max_pending must be nonnegative")
+        if history_limit is not None:
+            if isinstance(history_limit, bool) or not isinstance(history_limit, int):
+                raise TypeError("history_limit must be an integer or None")
+            if history_limit < 0:
+                raise ValueError("history_limit must be nonnegative")
         self._handler = handler
         self._max_pending = max_pending
         # Reserve a control slot so close() can enqueue its marker even at capacity.
@@ -41,10 +72,14 @@ class QueuedWorker:
         self._task: asyncio.Task[None] | None = None
         self._closing = False
         self._accepted: set[str] = set()
-        self._completed: list[str] = []
-        self._failed: list[JobFailure] = []
-        self._interrupted: list[str] = []
-        self._unstarted: list[str] = []
+        self._history: deque[_Outcome] = deque(maxlen=history_limit)
+        self._accepted_count = 0
+        self._counts: dict[OutcomeKind, int] = {
+            "completed": 0,
+            "failed": 0,
+            "interrupted": 0,
+            "unstarted": 0,
+        }
         self._grace_expired = False
         self._shutting_down = False
         self._abort_requested = False
@@ -65,6 +100,7 @@ class QueuedWorker:
             raise asyncio.QueueFull
         self._queue.put_nowait(job)
         self._accepted.add(job)
+        self._accepted_count += 1
 
     async def submit_wait(self, job: str) -> None:
         """Wait for capacity; acceptance occurs at submit()'s atomic enqueue."""
@@ -133,18 +169,32 @@ class QueuedWorker:
                 self._discard_pending()
             self._shutting_down = False
         return ShutdownReport(
-            tuple(self._completed),
-            tuple(self._failed),
-            tuple(self._interrupted),
-            tuple(self._unstarted),
+            tuple(item.job for item in self._history if item.kind == "completed"),
+            tuple(item.failure for item in self._history if item.failure is not None),
+            tuple(item.job for item in self._history if item.kind == "interrupted"),
+            tuple(item.job for item in self._history if item.kind == "unstarted"),
             self._grace_expired,
+            OutcomeCounts(
+                self._accepted_count,
+                self._counts["completed"],
+                self._counts["failed"],
+                self._counts["interrupted"],
+                self._counts["unstarted"],
+            ),
+            sum(self._counts.values()) - len(self._history),
         )
+
+    def _record(
+        self, kind: OutcomeKind, job: str, failure: JobFailure | None = None
+    ) -> None:
+        self._counts[kind] += 1
+        self._history.append(_Outcome(kind, job, failure))
 
     def _discard_pending(self) -> None:
         while not self._queue.empty():
             job = self._queue.get_nowait()
             if job is not None:
-                self._unstarted.append(job)
+                self._record("unstarted", job)
             self._queue.task_done()
 
     async def _run(self) -> None:
@@ -157,14 +207,14 @@ class QueuedWorker:
                 try:
                     await self._handler(job)
                 except asyncio.CancelledError:
-                    self._interrupted.append(job)
+                    self._record("interrupted", job)
                     raise
                 except Exception as error:
-                    self._failed.append(
-                        JobFailure(job, type(error).__name__, str(error))
+                    self._record(
+                        "failed", job, JobFailure(job, type(error).__name__, str(error))
                     )
                 else:
-                    self._completed.append(job)
+                    self._record("completed", job)
             finally:
                 self._queue.task_done()
 

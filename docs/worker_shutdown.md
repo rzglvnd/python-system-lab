@@ -120,3 +120,20 @@ is the enqueue operation. Cancellation after acceptance cannot retract that job;
 applications needing stronger acknowledgement or retry guarantees require a
 separate protocol. The next useful experiment is choosing how much accepted-ID
 and outcome history to retain while preserving the report's meaning.
+
+## Retained outcome details and lifetime counts
+
+`history_limit=N` keeps the latest N outcomes across all four categories in one
+shared deque. `None` (the default) retains every outcome; zero keeps only counts.
+The report's completed, failed, interrupted, and unstarted tuples are the retained
+details, ordered within each category by when their outcomes were recorded. They
+are not a complete audit trail when retention is limited. Discarding queued work
+during shutdown records new unstarted outcomes and can evict earlier failures.
+
+`report.counts` records lifetime accepted submissions and each terminal outcome
+independently of detail retention. `omitted_outcomes` states how many details were
+omitted. Counts and details are immutable snapshots. For supported shutdown paths,
+accepted equals completed + failed + interrupted + unstarted. No count includes
+the stop marker or a rejected submission. This commit bounds outcome details;
+accepted identifiers still retain lifetime duplicate protection until the next
+change introduces eviction of identifiers alongside their outcome details.
