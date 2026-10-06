@@ -171,3 +171,8 @@ Interview checkpoint: explain why a recent-history report differs from a lifetim
 total, why bounded duplicate detection permits ID reuse, and which memory costs
 remain outside this limit. A useful next task is a reproducible allocation
 experiment comparing full and bounded retention as the processed job count grows.
+
+The [retention allocation report](../reports/worker-retention-2026-10-06.md)
+now measures this comparison with 1,000, 10,000, and 50,000 successful jobs.
+The measured region keeps the stopped worker and report alive; it reports traced
+Python allocations rather than process RSS.

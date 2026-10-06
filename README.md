@@ -491,3 +491,8 @@ small background worker, including what to do when cleanup cannot finish.
 `python queued_worker.py` applies these cancellation concepts to one in-memory
 worker. See [the shutdown contract](docs/worker_shutdown.md) for admission rules,
 tests, and limitations.
+
+`benchmark_worker.py` compares unlimited, bounded, and counts-only retention in
+fresh processes. The [measured retention report](reports/worker-retention-2026-10-06.md)
+includes reproduction steps, raw trials, current/peak traced allocations, and
+measurement limitations.

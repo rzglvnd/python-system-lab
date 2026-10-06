@@ -26,4 +26,4 @@ select = ["E", "F", "I", "B", "UP"]
 [tool.mypy]
 python_version = "3.11"
 strict = true
-files = ["generator_execution.py", "generator_cleanup.py", "streaming_csv.py", "benchmark_csv.py", "taskgroup_failure.py", "taskgroup_cancellation.py", "taskgroup_deadline.py", "repeated_cancellation.py", "shielded_cleanup.py", "queued_worker.py", "tests"]
+files = ["generator_execution.py", "generator_cleanup.py", "streaming_csv.py", "benchmark_csv.py", "taskgroup_failure.py", "taskgroup_cancellation.py", "taskgroup_deadline.py", "repeated_cancellation.py", "shielded_cleanup.py", "queued_worker.py", "benchmark_worker.py", "tests"]
