@@ -53,7 +53,7 @@ handler replaces or suppresses cancellation. A handler that suppresses cancellat
 and returns is classified as completed; the worker cannot infer its business result.
 
 Tests combine a completed job, a failure, an interrupted job, and an unstarted job
-and verify that the report accounts for every accepted identifier exactly once.
+and verify complete accounting with the default unlimited retention policy.
 They also check queue accounting after failures and discarded work. `task_done()`
 is called for every retrieved item (including the stop marker and discarded jobs),
 so queue `join()` completion alone does not mean successful processing. The tests'
@@ -154,3 +154,20 @@ With finite history N and waiting capacity M, stored job identifiers are limited
 to at most N + M + 1 (retained outcomes, waiting jobs, and the running job).
 This bounds retained job references, not bytes: job/error strings, Python integer
 counters, caller-held reports, and waiting producer tasks have separate costs.
+
+For example, three successful jobs with `history_limit=2` produce two completed
+details, a completed count of three, and `omitted_outcomes=1`. A one-entry history
+can end with only the last discarded job after a deadline abort, while the counts
+still include earlier successes, failures, and interrupted work.
+
+The retention tests exercise all outcome categories with unlimited, zero, one,
+and three-entry histories. They verify queue accounting, repeatable immutable
+reports, and exclusion of rejected or cancelled submissions from accepted counts.
+A 300-job experiment also checks stored identifier counts during processing with
+waiting capacity one and history three. It measures the retained-reference bound;
+it does not measure byte allocation or process RSS.
+
+Interview checkpoint: explain why a recent-history report differs from a lifetime
+total, why bounded duplicate detection permits ID reuse, and which memory costs
+remain outside this limit. A useful next task is a reproducible allocation
+experiment comparing full and bounded retention as the processed job count grows.
