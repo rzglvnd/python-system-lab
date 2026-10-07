@@ -176,3 +176,8 @@ The [retention allocation report](../reports/worker-retention-2026-10-06.md)
 now measures this comparison with 1,000, 10,000, and 50,000 successful jobs.
 The measured region keeps the stopped worker and report alive; it reports traced
 Python allocations rather than process RSS.
+
+The [payload-width report](../reports/worker-payload-width-2026-10-08.md) extends
+that evidence to larger IDs and independently generated failure messages. History
+count bounds retained references; string width still affects retained and transient
+allocations. No input-size restriction is currently enforced.

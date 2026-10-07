@@ -496,3 +496,7 @@ tests, and limitations.
 fresh processes. The [measured retention report](reports/worker-retention-2026-10-06.md)
 includes reproduction steps, raw trials, current/peak traced allocations, and
 measurement limitations.
+
+The [payload-width report](reports/worker-payload-width-2026-10-08.md) varies
+successful-job ID size and failed-job message size independently, showing why
+limiting retained entry counts does not bound payload bytes.

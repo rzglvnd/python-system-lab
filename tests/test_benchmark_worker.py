@@ -12,7 +12,9 @@ import pytest
 from benchmark_worker import (
     POLICIES,
     Measurement,
+    error_message,
     expected_checksum,
+    job_id,
     measure,
     run_benchmark,
     validate_result,
@@ -81,6 +83,7 @@ def test_controller_rejects_incorrect_results() -> None:
         20,
         os.getpid() + 1,
         "test-loop",
+        retained_id_chars=39,
     )
     validate_result(result, 7, "bounded", 3, checksum)
     for invalid in (
@@ -120,7 +123,7 @@ def test_cli_launches_isolated_trials_with_rotating_order(tmp_path: Path) -> Non
         timeout=60,
     )
     report = json.loads(output.read_text(encoding="utf-8"))
-    assert report["schema_version"] == 1
+    assert report["schema_version"] == 2
     assert len(report["trials"]) == 12
     for jobs in (3, 7):
         trials = [trial for trial in report["trials"] if trial["jobs"] == jobs]
@@ -164,3 +167,123 @@ def test_cli_rejects_zero_size() -> None:
     )
     assert completed.returncode == 2
     assert "sizes and repetitions must be positive" in completed.stderr
+
+
+@pytest.mark.parametrize(
+    "id_width,error_width", [(13, None), (128, None), (13, 13), (13, 128)]
+)
+def test_sized_workloads_validate_counts_checksums_and_retained_characters(
+    id_width: int, error_width: int | None
+) -> None:
+    jobs = 7
+    digest = hashlib.sha256()
+    for index in range(jobs):
+        prefix = f"job-{index:09d}"
+        digest.update((prefix + "x" * (id_width - 13) + "\n").encode("ascii"))
+        if error_width is not None:
+            digest.update((prefix + "e" * (error_width - 13) + "\n").encode("ascii"))
+    expected = digest.hexdigest()
+    assert expected_checksum(jobs, id_width, error_width) == expected
+    assert expected_checksum(jobs, id_width + 1, error_width) != expected
+    for policy in POLICIES:
+        result = measure(
+            jobs,
+            policy,
+            history_limit=3,
+            max_pending=1,
+            id_width=id_width,
+            error_width=error_width,
+        )
+        # validate_result requires a child PID; direct unit measurements use ours.
+        result = replace(result, pid=os.getpid() + 1)
+        validate_result(
+            result,
+            jobs,
+            policy,
+            3,
+            expected,
+            id_width=id_width,
+            error_width=error_width,
+        )
+        assert result.counts.completed == (jobs if error_width is None else 0)
+        assert result.counts.failed == (0 if error_width is None else jobs)
+        with pytest.raises(RuntimeError, match="correctness"):
+            validate_result(
+                replace(
+                    result, retained_message_chars=result.retained_message_chars + 1
+                ),
+                jobs,
+                policy,
+                3,
+                expected,
+                id_width=id_width,
+                error_width=error_width,
+            )
+
+
+@pytest.mark.parametrize("width", [13, 128, 1024, 4096])
+def test_error_messages_are_unique_and_separately_constructed(width: int) -> None:
+    job = job_id(0)
+    first = error_message(job, width)
+    second = error_message(job_id(1), width)
+    assert len(first) == len(second) == width
+    assert first != second
+    assert first is not job
+    assert error_message(job, width) == first
+    assert error_message(job, width) is not first
+
+
+def test_controller_supports_width_matrix(tmp_path: Path) -> None:
+    output = tmp_path / "widths.json"
+    script = Path(__file__).resolve().parents[1] / "benchmark_worker.py"
+    subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "run",
+            "--sizes",
+            "3",
+            "--id-widths",
+            "13",
+            "128",
+            "--error-widths",
+            "13",
+            "128",
+            "--history-limit",
+            "2",
+            "--repetitions",
+            "1",
+            "--output",
+            str(output),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert report["schema_version"] == 2
+    assert report["width_unit"] == "ASCII characters (also UTF-8 bytes)"
+    assert len(report["trials"]) == 12
+    for trial in report["trials"]:
+        assert trial["checksum"] == expected_checksum(
+            3, trial["id_width"], trial["error_width"]
+        )
+        assert trial["counts"] == {
+            "accepted": 3,
+            "completed": 0,
+            "failed": 3,
+            "interrupted": 0,
+            "unstarted": 0,
+        }
+        assert trial["pid"] != os.getpid()
+
+
+@pytest.mark.parametrize(
+    "id_widths,error_widths", [([12], None), ([13], [12]), ([], None), ([13], [])]
+)
+def test_controller_rejects_invalid_width_matrix(
+    id_widths: list[int], error_widths: list[int] | None
+) -> None:
+    with pytest.raises(ValueError, match="width"):
+        run_benchmark([1], 1, id_widths=id_widths, error_widths=error_widths)
