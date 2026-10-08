@@ -53,6 +53,7 @@ class QueuedWorker:
         *,
         max_pending: int = 0,
         history_limit: int | None = None,
+        max_job_id_bytes: int | None = None,
     ) -> None:
         if isinstance(max_pending, bool) or not isinstance(max_pending, int):
             raise TypeError("max_pending must be an integer")
@@ -63,8 +64,16 @@ class QueuedWorker:
                 raise TypeError("history_limit must be an integer or None")
             if history_limit < 0:
                 raise ValueError("history_limit must be nonnegative")
+        if max_job_id_bytes is not None:
+            if isinstance(max_job_id_bytes, bool) or not isinstance(
+                max_job_id_bytes, int
+            ):
+                raise TypeError("max_job_id_bytes must be an integer or None")
+            if max_job_id_bytes < 0:
+                raise ValueError("max_job_id_bytes must be nonnegative")
         self._handler = handler
         self._max_pending = max_pending
+        self._max_job_id_bytes = max_job_id_bytes
         # Reserve a control slot so close() can enqueue its marker even at capacity.
         self._queue: asyncio.Queue[str | None] = asyncio.Queue(
             maxsize=max_pending + 1 if max_pending else 0
@@ -94,6 +103,7 @@ class QueuedWorker:
     def submit(self, job: str) -> None:
         if self._task is None or self._closing or self._task.done():
             raise RuntimeError("worker is not accepting jobs")
+        self._validate_job_id(job)
         if job in self._known_ids:
             raise ValueError(
                 "job identifiers must be unique among active and retained jobs"
@@ -103,6 +113,21 @@ class QueuedWorker:
         self._queue.put_nowait(job)
         self._known_ids.add(job)
         self._accepted_count += 1
+
+    def _validate_job_id(self, job: str) -> None:
+        limit = self._max_job_id_bytes
+        if limit is None:
+            return
+        # Every valid UTF-8 code point uses at least one byte. Reject clearly
+        # oversized strings before allocating an encoded copy of the whole ID.
+        if len(job) > limit:
+            raise ValueError("job identifier exceeds max_job_id_bytes")
+        try:
+            encoded_size = len(job.encode("utf-8"))
+        except UnicodeEncodeError as error:
+            raise ValueError("job identifier must be encodable as UTF-8") from error
+        if encoded_size > limit:
+            raise ValueError("job identifier exceeds max_job_id_bytes")
 
     async def submit_wait(self, job: str) -> None:
         """Wait for capacity; acceptance occurs at submit()'s atomic enqueue."""

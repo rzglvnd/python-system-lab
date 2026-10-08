@@ -500,3 +500,7 @@ measurement limitations.
 The [payload-width report](reports/worker-payload-width-2026-10-08.md) varies
 successful-job ID size and failed-job message size independently, showing why
 limiting retained entry counts does not bound payload bytes.
+
+An optional `max_job_id_bytes` setting now rejects oversized UTF-8 IDs before
+admission. The [shutdown contract](docs/worker_shutdown.md#optional-utf-8-id-byte-limit)
+defines byte boundaries, validation order, and memory limitations.

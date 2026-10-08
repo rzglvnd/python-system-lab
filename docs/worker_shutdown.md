@@ -180,4 +180,42 @@ Python allocations rather than process RSS.
 The [payload-width report](../reports/worker-payload-width-2026-10-08.md) extends
 that evidence to larger IDs and independently generated failure messages. History
 count bounds retained references; string width still affects retained and transient
-allocations. No input-size restriction is currently enforced.
+allocations. That experiment ran without input-size restrictions.
+
+## Optional UTF-8 ID byte limit
+
+`QueuedWorker(handler, max_job_id_bytes=B)` accepts identifiers whose strict UTF-8
+encoding is at most B bytes, including exactly B. B must be a nonnegative integer;
+booleans and non-integer values are rejected. Zero permits only the empty ID.
+The default `None` preserves unrestricted identifier behavior, including strings
+that cannot be UTF-8 encoded. When the limit is enabled, an unencodable ID raises
+`ValueError`, with the underlying `UnicodeEncodeError` preserved as its cause.
+
+Admission checks run in this order: lifecycle/closure, ID validation, duplicate
+detection, capacity, enqueue, then accepted-count increment. `submit_wait()` uses
+the same checks on every attempt. An oversized ID raises `ValueError` before any
+capacity wait, even on a full queue. Rejected IDs have no outcomes or accepted
+count, and the worker retains no reference to them. Caller-held exceptions may
+still retain their traceback and input references.
+
+Character count is a lower bound on UTF-8 byte count. IDs with more than B code
+points are rejected before allocating an encoded copy. The remaining candidates
+are strictly encoded and checked by byte length. This allocates at most 4B bytes
+of temporary UTF-8 payload for normal Python strings, plus object overhead.
+Validation still runs synchronously and costs work proportional to the candidate
+string size. For a string that is both unencodable and over the character bound,
+the size rejection occurs first.
+
+For example, `café` is four code points and five UTF-8 bytes, and `🙂` is one code
+point and four UTF-8 bytes. Tests cover ASCII, accents, emoji, combining marks,
+empty IDs, exact and below-limit acceptance, rejected IDs, invalid encodings,
+and rejection on a full queue. No Unicode normalization or truncation is applied;
+`é` and `e` followed by a combining accent remain different identifiers.
+
+This limit defines an encoded payload policy, not a bound on Python object size
+or process memory. The producer already constructed its ID before admission.
+Queue count, retained history, failure-message size, waiting tasks, and handler
+allocations have separate costs. Existing benchmark commands leave the limit
+disabled. Historical measurements record their original source versions and are
+not remeasured here. The next task is an
+explicit cap on retained error-message details with a truncation marker.
