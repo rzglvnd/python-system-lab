@@ -504,3 +504,9 @@ limiting retained entry counts does not bound payload bytes.
 An optional `max_job_id_bytes` setting now rejects oversized UTF-8 IDs before
 admission. The [shutdown contract](docs/worker_shutdown.md#optional-utf-8-id-byte-limit)
 defines byte boundaries, validation order, and memory limitations.
+
+An optional `max_error_message_chars` setting caps retained failure-message text.
+Each failure exposes `message_truncated` when text was omitted. The
+[error-message contract](docs/worker_shutdown.md#optional-error-message-character-limit)
+defines character boundaries and the distinction between retained and transient
+allocations.

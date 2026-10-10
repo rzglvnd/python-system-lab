@@ -15,6 +15,7 @@ class JobFailure:
     job: str
     error_type: str
     message: str
+    message_truncated: bool = False
 
 
 @dataclass(frozen=True)
@@ -54,6 +55,7 @@ class QueuedWorker:
         max_pending: int = 0,
         history_limit: int | None = None,
         max_job_id_bytes: int | None = None,
+        max_error_message_chars: int | None = None,
     ) -> None:
         if isinstance(max_pending, bool) or not isinstance(max_pending, int):
             raise TypeError("max_pending must be an integer")
@@ -71,9 +73,17 @@ class QueuedWorker:
                 raise TypeError("max_job_id_bytes must be an integer or None")
             if max_job_id_bytes < 0:
                 raise ValueError("max_job_id_bytes must be nonnegative")
+        if max_error_message_chars is not None:
+            if isinstance(max_error_message_chars, bool) or not isinstance(
+                max_error_message_chars, int
+            ):
+                raise TypeError("max_error_message_chars must be an integer or None")
+            if max_error_message_chars < 0:
+                raise ValueError("max_error_message_chars must be nonnegative")
         self._handler = handler
         self._max_pending = max_pending
         self._max_job_id_bytes = max_job_id_bytes
+        self._max_error_message_chars = max_error_message_chars
         # Reserve a control slot so close() can enqueue its marker even at capacity.
         self._queue: asyncio.Queue[str | None] = asyncio.Queue(
             maxsize=max_pending + 1 if max_pending else 0
@@ -244,8 +254,18 @@ class QueuedWorker:
                     self._record("interrupted", job)
                     raise
                 except Exception as error:
+                    message = str(error)
+                    limit = self._max_error_message_chars
+                    message_truncated = False
+                    if limit is not None and len(message) > limit:
+                        message = message[:limit]
+                        message_truncated = True
                     self._record(
-                        "failed", job, JobFailure(job, type(error).__name__, str(error))
+                        "failed",
+                        job,
+                        JobFailure(
+                            job, type(error).__name__, message, message_truncated
+                        ),
                     )
                 else:
                     self._record("completed", job)

@@ -217,5 +217,47 @@ or process memory. The producer already constructed its ID before admission.
 Queue count, retained history, failure-message size, waiting tasks, and handler
 allocations have separate costs. Existing benchmark commands leave the limit
 disabled. Historical measurements record their original source versions and are
-not remeasured here. The next task is an
-explicit cap on retained error-message details with a truncation marker.
+not remeasured here.
+
+## Optional error-message character limit
+
+`QueuedWorker(handler, max_error_message_chars=C)` retains at most C Python
+Unicode code points in each failure's `message`. C must be a nonnegative integer;
+booleans and other types are rejected. The default `None` preserves full messages.
+Zero retains an empty message. `JobFailure.message_truncated` is true exactly when
+the original `str(error)` was longer than C, including a nonempty message at zero.
+An empty message or one exactly at the limit is not marked as truncated.
+
+The worker keeps the original prefix and adds no ellipsis to the text. The separate
+boolean identifies lost diagnostic detail without consuming the character budget
+or confusing an original ellipsis with truncation. Existing three-argument
+`JobFailure(job, error_type, message)` construction defaults the flag to false.
+The job ID and exception type are preserved; the cap applies only to message text.
+
+This is a code-point policy, not a UTF-8 byte or user-perceived-character policy.
+An emoji can use one code point and four UTF-8 bytes. A combining sequence such as
+`e` followed by an accent can be split at the boundary. No encoding or normalization
+is performed, and strings containing lone surrogates are preserved or sliced too.
+For example, a message `invalid job` with C=7 becomes `invalid` with
+`message_truncated=True`; an original message `invalid` has the same retained text
+but `message_truncated=False`.
+
+Truncation changes only diagnostic details. The job still counts as failed, the
+worker continues to subsequent jobs, and history eviction still uses the shared
+outcome limit. `omitted_outcomes` counts whole omitted outcomes, not shortened
+messages. Counts-only history exposes no failure details, including truncation
+flags. Tests cover these combinations, Unicode and ASCII boundaries, a million-
+character message, default behavior, and invalid configuration.
+
+The full `str(error)` is constructed before slicing. The handler, exception, and
+formatting can allocate or retain much larger objects, and slicing may temporarily
+hold both strings. Character limits therefore bound retained message length, not
+peak memory, process RSS, or total worker memory. They also do not redact secrets
+that occur in the retained prefix. Formatting remains synchronous, and exceptions
+whose `__str__` raises are outside the existing handler-failure reporting contract.
+Historical benchmark commands leave this option disabled. A useful next experiment
+is measuring retained and peak allocations with this cap enabled.
+
+Interview checkpoint: explain why entry count and payload length need separate
+limits, why diagnostic truncation needs an explicit flag, and why restricting
+retained text cannot prevent a large transient allocation during formatting.
