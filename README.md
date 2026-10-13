@@ -510,3 +510,8 @@ Each failure exposes `message_truncated` when text was omitted. The
 [error-message contract](docs/worker_shutdown.md#optional-error-message-character-limit)
 defines character boundaries and the distinction between retained and transient
 allocations.
+
+The [error-message cap report](reports/worker-error-caps-2026-10-14.md) compares
+unrestricted, zero, and 128-character caps in 81 matched fresh-process trials.
+It records retained text and truncation counts alongside current and peak traced
+allocations, including transient costs that remain after truncation.

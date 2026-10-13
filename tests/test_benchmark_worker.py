@@ -6,6 +6,7 @@ import sys
 import tracemalloc
 from dataclasses import replace
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -123,7 +124,8 @@ def test_cli_launches_isolated_trials_with_rotating_order(tmp_path: Path) -> Non
         timeout=60,
     )
     report = json.loads(output.read_text(encoding="utf-8"))
-    assert report["schema_version"] == 2
+    assert report["schema_version"] == 3
+    assert report["error_message_caps"] == [None]
     assert len(report["trials"]) == 12
     for jobs in (3, 7):
         trials = [trial for trial in report["trials"] if trial["jobs"] == jobs]
@@ -136,6 +138,8 @@ def test_cli_launches_isolated_trials_with_rotating_order(tmp_path: Path) -> Non
             "unlimited",
         ]
         for trial in trials:
+            assert trial["max_error_message_chars"] is None
+            assert trial["retained_truncated_messages"] == 0
             assert trial["pid"] != os.getpid()
             assert trial["checksum"] == expected_checksum(jobs)
             assert trial["counts"] == {
@@ -172,8 +176,9 @@ def test_cli_rejects_zero_size() -> None:
 @pytest.mark.parametrize(
     "id_width,error_width", [(13, None), (128, None), (13, 13), (13, 128)]
 )
+@pytest.mark.parametrize("cap", [None, 0, 13, 64, 128])
 def test_sized_workloads_validate_counts_checksums_and_retained_characters(
-    id_width: int, error_width: int | None
+    id_width: int, error_width: int | None, cap: int | None
 ) -> None:
     jobs = 7
     digest = hashlib.sha256()
@@ -193,6 +198,7 @@ def test_sized_workloads_validate_counts_checksums_and_retained_characters(
             max_pending=1,
             id_width=id_width,
             error_width=error_width,
+            max_error_message_chars=cap,
         )
         # validate_result requires a child PID; direct unit measurements use ours.
         result = replace(result, pid=os.getpid() + 1)
@@ -204,21 +210,29 @@ def test_sized_workloads_validate_counts_checksums_and_retained_characters(
             expected,
             id_width=id_width,
             error_width=error_width,
+            max_error_message_chars=cap,
         )
         assert result.counts.completed == (jobs if error_width is None else 0)
         assert result.counts.failed == (0 if error_width is None else jobs)
-        with pytest.raises(RuntimeError, match="correctness"):
-            validate_result(
-                replace(
-                    result, retained_message_chars=result.retained_message_chars + 1
-                ),
-                jobs,
-                policy,
-                3,
-                expected,
-                id_width=id_width,
-                error_width=error_width,
-            )
+        for invalid in (
+            replace(result, retained_message_chars=result.retained_message_chars + 1),
+            replace(
+                result,
+                retained_truncated_messages=result.retained_truncated_messages + 1,
+            ),
+            replace(result, max_error_message_chars=1 if cap is None else None),
+        ):
+            with pytest.raises(RuntimeError, match="correctness"):
+                validate_result(
+                    invalid,
+                    jobs,
+                    policy,
+                    3,
+                    expected,
+                    id_width=id_width,
+                    error_width=error_width,
+                    max_error_message_chars=cap,
+                )
 
 
 @pytest.mark.parametrize("width", [13, 128, 1024, 4096])
@@ -262,7 +276,7 @@ def test_controller_supports_width_matrix(tmp_path: Path) -> None:
         timeout=60,
     )
     report = json.loads(output.read_text(encoding="utf-8"))
-    assert report["schema_version"] == 2
+    assert report["schema_version"] == 3
     assert report["width_unit"] == "ASCII characters (also UTF-8 bytes)"
     assert len(report["trials"]) == 12
     for trial in report["trials"]:
@@ -287,3 +301,104 @@ def test_controller_rejects_invalid_width_matrix(
 ) -> None:
     with pytest.raises(ValueError, match="width"):
         run_benchmark([1], 1, id_widths=id_widths, error_widths=error_widths)
+
+
+def test_cli_cap_matrix_rotates_caps_and_validates_truncation(tmp_path: Path) -> None:
+    output = tmp_path / "caps.json"
+    script = Path(__file__).resolve().parents[1] / "benchmark_worker.py"
+    subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "run",
+            "--sizes",
+            "3",
+            "--error-widths",
+            "128",
+            "--error-message-caps",
+            "none",
+            "0",
+            "128",
+            "--history-limit",
+            "2",
+            "--repetitions",
+            "3",
+            "--output",
+            str(output),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert report["schema_version"] == 3
+    assert report["error_message_caps"] == [None, 0, 128]
+    assert len(report["trials"]) == 27
+    for repetition, cap_order, policy_order in (
+        (1, [None, 0, 128], ["unlimited", "bounded", "counts-only"]),
+        (2, [0, 128, None], ["bounded", "counts-only", "unlimited"]),
+        (3, [128, None, 0], ["counts-only", "unlimited", "bounded"]),
+    ):
+        trials = [t for t in report["trials"] if t["repetition"] == repetition]
+        assert [(t["max_error_message_chars"], t["policy"]) for t in trials] == [
+            (cap, policy) for cap in cap_order for policy in policy_order
+        ]
+        for trial in trials:
+            retained = {"unlimited": 3, "bounded": 2, "counts-only": 0}[trial["policy"]]
+            zero_cap = trial["max_error_message_chars"] == 0
+            assert trial["retained_message_chars"] == (
+                0 if zero_cap else retained * 128
+            )
+            assert trial["retained_truncated_messages"] == (retained if zero_cap else 0)
+            assert trial["checksum"] == expected_checksum(3, error_width=128)
+            assert trial["counts"] == {
+                "accepted": 3,
+                "completed": 0,
+                "failed": 3,
+                "interrupted": 0,
+                "unstarted": 0,
+            }
+            assert trial["pid"] != os.getpid()
+
+
+@pytest.mark.parametrize("cap", [-1, True, 1.5, "4"])
+def test_invalid_caps_are_rejected_before_measurement(cap: object) -> None:
+    expected_error = ValueError if cap == -1 else TypeError
+    with pytest.raises(expected_error, match="error-message cap"):
+        measure(1, "bounded", max_error_message_chars=cast(int, cap))
+    with pytest.raises(expected_error, match="error-message cap"):
+        run_benchmark([1], 1, error_message_caps=[cast(int, cap)])
+    assert not tracemalloc.is_tracing()
+
+
+def test_empty_cap_matrix_is_rejected() -> None:
+    with pytest.raises(ValueError, match="cap list must not be empty"):
+        run_benchmark([1], 1, error_message_caps=[])
+
+
+@pytest.mark.parametrize("cap", ["-1", "invalid"])
+def test_cli_rejects_invalid_cap_without_writing_report(
+    cap: str, tmp_path: Path
+) -> None:
+    output = tmp_path / "invalid.json"
+    script = Path(__file__).resolve().parents[1] / "benchmark_worker.py"
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "run",
+            "--sizes",
+            "1",
+            "--error-message-caps",
+            cap,
+            "--output",
+            str(output),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert completed.returncode == 2
+    assert "nonnegative integer" in completed.stderr
+    assert not output.exists()

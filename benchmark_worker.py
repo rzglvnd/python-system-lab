@@ -40,6 +40,8 @@ class Measurement:
     error_width: int | None = None
     retained_id_chars: int = 0
     retained_message_chars: int = 0
+    max_error_message_chars: int | None = None
+    retained_truncated_messages: int = 0
 
 
 def validate_workload(jobs: int, id_width: int, error_width: int | None) -> None:
@@ -47,6 +49,25 @@ def validate_workload(jobs: int, id_width: int, error_width: int | None) -> None
         raise ValueError("jobs must be nonnegative and fit nine-digit identifiers")
     if id_width < 13 or (error_width is not None and error_width < 13):
         raise ValueError("ID and error widths must be at least 13 ASCII characters")
+
+
+def validate_message_cap(cap: int | None) -> None:
+    if cap is not None:
+        if isinstance(cap, bool) or not isinstance(cap, int):
+            raise TypeError("error-message cap must be an integer or None")
+        if cap < 0:
+            raise ValueError("error-message cap must be nonnegative")
+
+
+def parse_message_cap(value: str) -> int | None:
+    try:
+        cap = None if value.lower() == "none" else int(value)
+        validate_message_cap(cap)
+        return cap
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(
+            "error-message cap must be 'none' or a nonnegative integer"
+        ) from error
 
 
 def job_id(index: int, width: int = 13) -> str:
@@ -85,6 +106,7 @@ async def _measure(
     max_pending: int,
     id_width: int,
     error_width: int | None,
+    max_error_message_chars: int | None,
 ) -> Measurement:
     # The event loop and module imports exist before tracing begins.
     tracemalloc.start(1)
@@ -102,7 +124,10 @@ async def _measure(
                 raise ValueError(message)
 
         worker = QueuedWorker(
-            handle, max_pending=max_pending, history_limit=history_limit
+            handle,
+            max_pending=max_pending,
+            history_limit=history_limit,
+            max_error_message_chars=max_error_message_chars,
         )
         worker.start()
         try:
@@ -135,6 +160,8 @@ async def _measure(
             sum(len(job) for job in report.completed)
             + sum(len(failure.job) for failure in report.failed),
             sum(len(failure.message) for failure in report.failed),
+            max_error_message_chars,
+            sum(failure.message_truncated for failure in report.failed),
         )
     finally:
         tracemalloc.stop()
@@ -148,16 +175,26 @@ def measure(
     *,
     id_width: int = 13,
     error_width: int | None = None,
+    max_error_message_chars: int | None = None,
 ) -> Measurement:
     """Trace worker creation through shutdown, sampling before releasing ownership."""
     limit = retention_limit(policy, history_limit)
     validate_workload(jobs, id_width, error_width)
+    validate_message_cap(max_error_message_chars)
     if jobs < 0 or max_pending <= 0:
         raise ValueError("jobs must be nonnegative and waiting capacity positive")
     if tracemalloc.is_tracing():
         raise RuntimeError("measurement requires tracing to be initially disabled")
     return asyncio.run(
-        _measure(jobs, policy, limit, max_pending, id_width, error_width)
+        _measure(
+            jobs,
+            policy,
+            limit,
+            max_pending,
+            id_width,
+            error_width,
+            max_error_message_chars,
+        )
     )
 
 
@@ -170,9 +207,17 @@ def validate_result(
     *,
     id_width: int = 13,
     error_width: int | None = None,
+    max_error_message_chars: int | None = None,
 ) -> None:
+    validate_message_cap(max_error_message_chars)
     limit = retention_limit(policy, history_limit)
     retained = jobs if limit is None else min(jobs, limit)
+    message_width = error_width or 0
+    truncated = (
+        max_error_message_chars is not None and message_width > max_error_message_chars
+    )
+    if max_error_message_chars is not None:
+        message_width = min(message_width, max_error_message_chars)
     counts = (
         OutcomeCounts(jobs, jobs, 0, 0, 0)
         if error_width is None
@@ -187,8 +232,10 @@ def validate_result(
         or result.counts != counts
         or result.id_width != id_width
         or result.error_width != error_width
+        or result.max_error_message_chars != max_error_message_chars
         or result.retained_id_chars != retained * id_width
-        or result.retained_message_chars != retained * (error_width or 0)
+        or result.retained_message_chars != retained * message_width
+        or result.retained_truncated_messages != (retained if truncated else 0)
         or result.retained_details != retained
         or result.retained_ids != retained
         or result.omitted_outcomes != jobs - retained
@@ -207,6 +254,7 @@ def run_benchmark(
     *,
     id_widths: list[int] | None = None,
     error_widths: list[int] | None = None,
+    error_message_caps: list[int | None] | None = None,
 ) -> dict[str, object]:
     """Launch one fresh interpreter per policy, job count, and repetition."""
     if (
@@ -226,15 +274,25 @@ def run_benchmark(
     )
     if not id_widths or not error_cases:
         raise ValueError("width lists must not be empty")
+    caps = [None] if error_message_caps is None else error_message_caps
+    if not caps:
+        raise ValueError("error-message cap list must not be empty")
+    for cap in caps:
+        validate_message_cap(cap)
     for jobs, id_width, error_width in product(sizes, id_widths, error_cases):
         validate_workload(jobs, id_width, error_width)
     trials: list[dict[str, object]] = []
     for jobs, id_width, error_width in product(sizes, id_widths, error_cases):
         expected = expected_checksum(jobs, id_width, error_width)
         for repetition in range(1, repetitions + 1):
-            # Rotate policy order to avoid always measuring one policy first.
+            # Rotate cap and policy order between repetitions.
             offset = (repetition - 1) % len(POLICIES)
-            for policy in POLICIES[offset:] + POLICIES[:offset]:
+            cap_offset = (repetition - 1) % len(caps)
+            cases = product(
+                caps[cap_offset:] + caps[:cap_offset],
+                POLICIES[offset:] + POLICIES[:offset],
+            )
+            for cap, policy in cases:
                 command = [
                     sys.executable,
                     str(script),
@@ -250,6 +308,8 @@ def run_benchmark(
                 ]
                 if error_width is not None:
                     command.extend(["--error-width", str(error_width)])
+                if cap is not None:
+                    command.extend(["--max-error-message-chars", str(cap)])
                 completed = subprocess.run(
                     command,
                     check=True,
@@ -269,10 +329,11 @@ def run_benchmark(
                     expected,
                     id_width=id_width,
                     error_width=error_width,
+                    max_error_message_chars=cap,
                 )
                 trials.append({"repetition": repetition, **asdict(result)})
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "recorded_at_utc": datetime.now(UTC).isoformat(),
         "environment": {
             "python": sys.version,
@@ -293,6 +354,7 @@ def run_benchmark(
         "max_pending": max_pending,
         "id_widths": id_widths,
         "error_widths": error_cases,
+        "error_message_caps": caps,
         "width_unit": "ASCII characters (also UTF-8 bytes)",
         "trials": trials,
     }
@@ -307,11 +369,19 @@ def main() -> None:
     run.add_argument("--output", type=Path)
     run.add_argument("--id-widths", type=int, nargs="+", default=[13])
     run.add_argument("--error-widths", type=int, nargs="+")
+    run.add_argument(
+        "--error-message-caps",
+        type=parse_message_cap,
+        nargs="+",
+        default=[None],
+        help="retained message character caps; use 'none' for unrestricted",
+    )
     worker = commands.add_parser("worker", help="measure one trial")
     worker.add_argument("jobs", type=int)
     worker.add_argument("policy", choices=POLICIES)
     worker.add_argument("--id-width", type=int, default=13)
     worker.add_argument("--error-width", type=int)
+    worker.add_argument("--max-error-message-chars", type=parse_message_cap)
     for command in (run, worker):
         command.add_argument("--history-limit", type=int, default=100)
         command.add_argument("--max-pending", type=int, default=16)
@@ -335,6 +405,7 @@ def main() -> None:
                         args.max_pending,
                         id_width=args.id_width,
                         error_width=args.error_width,
+                        max_error_message_chars=args.max_error_message_chars,
                     )
                 )
             )
@@ -360,6 +431,7 @@ def main() -> None:
                 args.max_pending,
                 id_widths=args.id_widths,
                 error_widths=args.error_widths,
+                error_message_caps=args.error_message_caps,
             ),
             indent=2,
         )

@@ -255,8 +255,9 @@ hold both strings. Character limits therefore bound retained message length, not
 peak memory, process RSS, or total worker memory. They also do not redact secrets
 that occur in the retained prefix. Formatting remains synchronous, and exceptions
 whose `__str__` raises are outside the existing handler-failure reporting contract.
-Historical benchmark commands leave this option disabled. A useful next experiment
-is measuring retained and peak allocations with this cap enabled.
+Historical benchmark commands leave this option disabled. The
+[error-message cap report](../reports/worker-error-caps-2026-10-14.md) now measures
+retained and peak allocations with unrestricted, zero, and 128-character caps.
 
 Interview checkpoint: explain why entry count and payload length need separate
 limits, why diagnostic truncation needs an explicit flag, and why restricting
