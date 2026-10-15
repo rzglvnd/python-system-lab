@@ -16,6 +16,7 @@ class JobFailure:
     error_type: str
     message: str
     message_truncated: bool = False
+    message_format_failed: bool = False
 
 
 @dataclass(frozen=True)
@@ -254,7 +255,13 @@ class QueuedWorker:
                     self._record("interrupted", job)
                     raise
                 except Exception as error:
-                    message = str(error)
+                    message_format_failed = False
+                    try:
+                        message = str(error)
+                    except Exception:
+                        # Do not call repr() or format the formatting exception.
+                        message = "error message unavailable"
+                        message_format_failed = True
                     limit = self._max_error_message_chars
                     message_truncated = False
                     if limit is not None and len(message) > limit:
@@ -264,7 +271,11 @@ class QueuedWorker:
                         "failed",
                         job,
                         JobFailure(
-                            job, type(error).__name__, message, message_truncated
+                            job,
+                            type(error).__name__,
+                            message,
+                            message_truncated,
+                            message_format_failed,
                         ),
                     )
                 else:

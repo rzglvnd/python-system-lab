@@ -515,3 +515,8 @@ The [error-message cap report](reports/worker-error-caps-2026-10-14.md) compares
 unrestricted, zero, and 128-character caps in 81 matched fresh-process trials.
 It records retained text and truncation counts alongside current and peak traced
 allocations, including transient costs that remain after truncation.
+
+Ordinary exception-formatting failures now preserve the original failed-job
+outcome using fixed diagnostic text and `message_format_failed` metadata. The
+[formatting-failure contract](docs/worker_shutdown.md#failure-while-formatting-an-exception)
+explains fallback truncation, continued draining, and control-flow exceptions.

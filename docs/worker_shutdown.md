@@ -225,7 +225,8 @@ not remeasured here.
 Unicode code points in each failure's `message`. C must be a nonnegative integer;
 booleans and other types are rejected. The default `None` preserves full messages.
 Zero retains an empty message. `JobFailure.message_truncated` is true exactly when
-the original `str(error)` was longer than C, including a nonempty message at zero.
+the diagnostic text was longer than C, including a nonempty message at zero.
+Diagnostic text is `str(error)`, or fixed fallback text when formatting fails.
 An empty message or one exactly at the limit is not marked as truncated.
 
 The worker keeps the original prefix and adds no ellipsis to the text. The separate
@@ -249,12 +250,12 @@ messages. Counts-only history exposes no failure details, including truncation
 flags. Tests cover these combinations, Unicode and ASCII boundaries, a million-
 character message, default behavior, and invalid configuration.
 
-The full `str(error)` is constructed before slicing. The handler, exception, and
+Formatting is attempted before slicing. The handler, exception, and
 formatting can allocate or retain much larger objects, and slicing may temporarily
 hold both strings. Character limits therefore bound retained message length, not
 peak memory, process RSS, or total worker memory. They also do not redact secrets
-that occur in the retained prefix. Formatting remains synchronous, and exceptions
-whose `__str__` raises are outside the existing handler-failure reporting contract.
+that occur in the retained prefix. Formatting remains synchronous; ordinary
+formatting failures use the fallback policy below.
 Historical benchmark commands leave this option disabled. The
 [error-message cap report](../reports/worker-error-caps-2026-10-14.md) now measures
 retained and peak allocations with unrestricted, zero, and 128-character caps.
@@ -262,3 +263,40 @@ retained and peak allocations with unrestricted, zero, and 128-character caps.
 Interview checkpoint: explain why entry count and payload length need separate
 limits, why diagnostic truncation needs an explicit flag, and why restricting
 retained text cannot prevent a large transient allocation during formatting.
+
+## Failure while formatting an exception
+
+Calling `str(error)` executes exception-provided code. If it raises an ordinary
+`Exception`, the worker records the original job as failed with its original
+exception type name, the fixed text `error message unavailable`, and
+`JobFailure.message_format_failed=True`. A `__str__` that returns a non-string
+causes Python to raise `TypeError` and uses the same fallback. Neither the original
+exception's `repr()` nor the formatting exception is formatted or retained in the
+failure detail. This avoids another attempt to render potentially broken code.
+
+The existing character cap applies to fallback text too. The fallback is 25 code
+points: cap zero stores an empty message with both flags true; cap 25 stores the
+full fallback with only `message_format_failed` true. `message_truncated` describes
+the available diagnostic text; it cannot describe an original message that could
+not be produced. An ordinary exception whose actual message is the fallback text
+keeps `message_format_failed=False`. Existing three- and four-argument `JobFailure`
+construction defaults the new flag to false.
+
+Ordinary formatting failures no longer terminate the worker or leave the accepted
+job without an outcome. Subsequent jobs still run during normal draining. If an
+abort was already requested, a cleanup exception with broken formatting becomes
+a failed outcome and pending work remains unstarted. History eviction and lifetime
+counts follow the same policies; counts-only mode exposes no failure details.
+Tests exercise these paths, cap boundaries, and identical ordinary/fallback text.
+
+The guard catches `Exception`, not `BaseException`. Cancellation and other
+control-flow exceptions raised by formatting still propagate; those formatting
+paths remain outside the supported terminal-accounting guarantee. A formatter
+that blocks, allocates excessively, or never returns also remains outside this
+guard's guarantees. No formatting timeout or process isolation is introduced.
+Historical reports retain their original source versions and limitations.
+
+Interview checkpoint: error reporting can itself execute failing code. Explain
+why a fixed fallback needs its own flag, why formatting the secondary exception
+would be risky, and why swallowing cancellation would change shutdown behavior.
+The next question is whether counts-only retention should skip message formatting.
