@@ -266,9 +266,9 @@ retained text cannot prevent a large transient allocation during formatting.
 
 ## Failure while formatting an exception
 
-Calling `str(error)` executes exception-provided code. If it raises an ordinary
-`Exception`, the worker records the original job as failed with its original
-exception type name, the fixed text `error message unavailable`, and
+When retaining details, `str(error)` executes exception-provided code. If it raises
+an ordinary `Exception`, the worker records the original job as failed with its
+original exception type name, the fixed text `error message unavailable`, and
 `JobFailure.message_format_failed=True`. A `__str__` that returns a non-string
 causes Python to raise `TypeError` and uses the same fallback. Neither the original
 exception's `repr()` nor the formatting exception is formatted or retained in the
@@ -289,9 +289,10 @@ a failed outcome and pending work remains unstarted. History eviction and lifeti
 counts follow the same policies; counts-only mode exposes no failure details.
 Tests exercise these paths, cap boundaries, and identical ordinary/fallback text.
 
-The guard catches `Exception`, not `BaseException`. Cancellation and other
-control-flow exceptions raised by formatting still propagate; those formatting
-paths remain outside the supported terminal-accounting guarantee. A formatter
+When retaining details, the guard catches `Exception`, not `BaseException`.
+Cancellation and other control-flow exceptions raised by formatting still
+propagate; those formatting paths remain outside the supported terminal-accounting
+guarantee. A formatter
 that blocks, allocates excessively, or never returns also remains outside this
 guard's guarantees. No formatting timeout or process isolation is introduced.
 Historical reports retain their original source versions and limitations.
@@ -299,4 +300,32 @@ Historical reports retain their original source versions and limitations.
 Interview checkpoint: error reporting can itself execute failing code. Explain
 why a fixed fallback needs its own flag, why formatting the secondary exception
 would be risky, and why swallowing cancellation would change shutdown behavior.
-The next question is whether counts-only retention should skip message formatting.
+
+## Counts-only failures skip diagnostics
+
+With `history_limit=0`, an ordinary handler exception increments the failed count
+and releases the job's identifier without calling `str(error)`, `repr(error)`, or
+constructing a `JobFailure`. Subsequent jobs still run during normal draining.
+Reports retain no outcome details or diagnostic flags; lifetime counts and
+`omitted_outcomes` remain complete for the supported shutdown paths.
+
+This intentionally avoids exception-provided formatting code, including any side
+effects, failures, or control-flow signals that code would have produced.
+Cancellation raised by the handler itself still records an interrupted outcome
+and propagates. A cleanup exception after a deadline abort still counts as failed,
+and no next job starts after the abort. Queue accounting and identifier reuse keep
+their existing behavior. Tests verify these distinctions using observable formatter
+calls and event-gated cleanup.
+
+Message-cap configuration is still validated, but it has no diagnostic effect in
+counts-only mode. This differs from `max_error_message_chars=0` with retained
+history: retained failures still format messages to determine truncation and
+formatting-failure flags, even when their stored message text is empty. Any positive
+history limit and the default unlimited history preserve diagnostic formatting.
+
+Skipping diagnostics does not prevent the handler from constructing a large
+message or exception before raising it. No throughput or allocation improvement
+has been measured for this change. Historical benchmark results retain their
+original source versions; the benchmark's handler still constructs and hashes full
+messages before raising. A useful next experiment is measuring the effect on
+transient allocations under failure-heavy workloads.

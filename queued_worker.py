@@ -255,6 +255,9 @@ class QueuedWorker:
                     self._record("interrupted", job)
                     raise
                 except Exception as error:
+                    if self._history.maxlen == 0:
+                        self._record("failed", job)
+                        continue
                     message_format_failed = False
                     try:
                         message = str(error)

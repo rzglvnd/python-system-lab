@@ -520,3 +520,8 @@ Ordinary exception-formatting failures now preserve the original failed-job
 outcome using fixed diagnostic text and `message_format_failed` metadata. The
 [formatting-failure contract](docs/worker_shutdown.md#failure-while-formatting-an-exception)
 explains fallback truncation, continued draining, and control-flow exceptions.
+
+With `history_limit=0`, ordinary failures skip message formatting and failure-detail
+construction while preserving lifetime accounting. The
+[counts-only contract](docs/worker_shutdown.md#counts-only-failures-skip-diagnostics)
+distinguishes this policy from retaining failures with an empty-message cap.
