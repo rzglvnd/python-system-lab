@@ -525,3 +525,8 @@ With `history_limit=0`, ordinary failures skip message formatting and failure-de
 construction while preserving lifetime accounting. The
 [counts-only contract](docs/worker_shutdown.md#counts-only-failures-skip-diagnostics)
 distinguishes this policy from retaining failures with an empty-message cap.
+
+The [before/after comparison](reports/worker-counts-only-comparison-2026-10-16.md)
+uses `compare_worker_versions.py` to run matched committed source exports in fresh
+processes. Its 216 trials show a workload-dependent peak change and no consistent
+reduction in current traced allocations.

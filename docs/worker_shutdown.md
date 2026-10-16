@@ -324,8 +324,9 @@ formatting-failure flags, even when their stored message text is empty. Any posi
 history limit and the default unlimited history preserve diagnostic formatting.
 
 Skipping diagnostics does not prevent the handler from constructing a large
-message or exception before raising it. No throughput or allocation improvement
-has been measured for this change. Historical benchmark results retain their
-original source versions; the benchmark's handler still constructs and hashes full
-messages before raising. A useful next experiment is measuring the effect on
-transient allocations under failure-heavy workloads.
+message or exception before raising it. The
+[matched before/after report](../reports/worker-counts-only-comparison-2026-10-16.md)
+now measures a workload-dependent peak change, with no consistent reduction in
+current traced allocations. No throughput improvement has been measured.
+Historical benchmark results retain their original source versions; the
+benchmark's handler still constructs and hashes full messages before raising.
