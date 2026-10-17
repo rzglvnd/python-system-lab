@@ -530,3 +530,8 @@ The [before/after comparison](reports/worker-counts-only-comparison-2026-10-16.m
 uses `compare_worker_versions.py` to run matched committed source exports in fresh
 processes. Its 216 trials show a workload-dependent peak change and no consistent
 reduction in current traced allocations.
+
+The separate [lazy-formatting experiment](reports/worker-lazy-formatting-2026-10-17.md)
+compares message construction in an exception's constructor versus `__str__`.
+Its 216 trials record formatting calls and generated characters without forcing
+discarded messages to be built for checksum validation.
