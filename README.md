@@ -465,6 +465,60 @@ Retaining the task and observing its result are essential parts of the design.
 
 Reference: [Shielding from cancellation](https://docs.python.org/3.11/library/asyncio-task.html#shielding-from-cancellation).
 
+## Cancelling work dispatched to a thread
+
+Run `python thread_cancellation.py` to compare normal completion with cancellation
+of a task running `asyncio.to_thread()`. A thread-safe notification confirms the
+blocking function has started before cancellation. The function waits on a
+`threading.Event`; after the async task reports cancellation, the coordinator
+opens that gate and the function schedules a synthetic side-effect notification.
+Cancelling its async wrapper did not stop the already-running function.
+
+The cancelled trace is:
+
+```text
+thread:started
+caller:cancelled-error
+caller:released
+thread:side-effect
+```
+
+Before release, the task is done and cancelled while its gated work has not
+produced the effect. After release, the event loop receives the effect notification.
+The normal control keeps the task pending until release and receives `thread-result`.
+The JSON report captures these observations and confirms a different execution
+thread without depending on thread IDs or elapsed times.
+
+The cancellation observation uses `gather(return_exceptions=True)` to collect the
+owned task's `CancelledError` as data. Cancellation of the coordinator itself still
+propagates. A `finally` block always opens the thread gate. If the wrapper has been
+cancelled, cleanup awaits its post-gate notification; otherwise it shields and
+awaits the owned task's return, including if the coordinator was cancelled before
+dispatch. `asyncio.run()` subsequently shuts down its default executor and joins
+its threads. The notification alone is not a thread join or retrieval of the
+cancelled task's lost result.
+
+Only event-loop callbacks mutate the trace and asyncio events. The blocking
+function communicates through `loop.call_soon_threadsafe`; its shared release
+gate is a `threading.Event`. Event gates establish ordering. Five-second test and
+15-second subprocess watchdogs detect hangs; they are not timing measurements.
+Tests cover both completion paths, cancellation of the coordinator before dispatch,
+and CLI exit after both runners finish executor shutdown.
+
+The side effect is an in-memory notification, not a database write or transaction.
+The experiment starts work before cancelling its wrapper; it does not promise
+the same behavior for work cancelled before execution. It covers one coordinator
+cancellation, not repeated cancellation during ownership cleanup. Its function
+has no blocking operation beyond the releasable gate; a real unresponsive call
+can still obstruct executor shutdown. A request timeout cannot by itself prove
+that offloaded work stopped or that its side effects were rolled back.
+
+Interview checkpoint: distinguish the async task's lifetime from the function and
+executor thread lifetimes. Explain who waits for outstanding work and why closing
+a request's resources immediately on cancellation may race with continued thread
+activity. A useful follow-up is a cooperative stop flag, including which operations
+can actually check it before producing an effect.
+
 ## Cleanup can fail too
 
 `tests/test_taskgroup_cleanup_failure.py` starts three workers before releasing a
