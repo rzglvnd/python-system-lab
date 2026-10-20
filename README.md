@@ -521,12 +521,13 @@ function can check it before producing an effect.
 
 ## Cooperative stop checkpoints in threaded work
 
-Run `python thread_cooperative_stop.py` to compare three event-gated scenarios:
+Run `python thread_cooperative_stop.py` to compare four event-gated scenarios:
 
 | Stop request | Worker result | Effect produced | Stop observed at checkpoint |
 | --- | --- | --- | --- |
 | None | `completed` | Yes | No |
 | Before checkpoint | `stopped` | No | Yes |
+| After checkpoint, before effect | `completed` | Yes | No |
 | After effect | `completed` | Yes | No |
 
 The worker first blocks on a release gate, then checks a separate `threading.Event`
@@ -535,37 +536,61 @@ closed. The owned task remains pending: setting the stop flag cannot wake an
 unrelated blocking wait. After release, the worker observes the request and
 returns `stopped` before scheduling the synthetic effect notification.
 
-Without a stop request, the worker schedules the notification, waits on a second
-gate, and returns `completed`. The late-stop scenario requests a stop after the
-notification but before opening that second gate. The function is still running,
+After passing the check, the worker notifies the event loop and waits on an
+effect gate before scheduling the synthetic effect notification. The
+`after_checkpoint` scenario keeps that gate closed until the coordinator receives
+the checkpoint notification and requests a stop. At that request, the report shows
+the checkpoint passed, the task pending, and the effect absent. Opening the gate
+then allows the effect and a `completed` result: the worker does not check again.
+The gate deliberately forces this interleaving; it does not measure how often it
+would occur without the gate. Its trace is:
+
+```text
+thread:started
+caller:released
+thread:checkpoint-passed
+caller:stop-requested
+caller:effect-released
+thread:side-effect
+caller:finish-released
+caller:result
+```
+
+Without a stop request, the coordinator opens the effect gate immediately. After
+scheduling the effect notification, the worker waits on a finish gate and returns
+`completed` when released. The late-stop scenario requests a stop after the
+notification but before opening that finish gate. The function is still running,
 but it has already passed its only checkpoint. It returns `completed`; the stop
 request cannot undo its effect. The JSON report includes the trace, stop observation,
-task/effect snapshots at the request, and the actual function result.
+task/checkpoint/effect snapshots at the request, and the actual function result.
 
 The coordinator retains and shields the task, then explicitly awaits its result.
-Its `finally` block requests a stop if work remains, opens both gates, and awaits
+Its `finally` block requests a stop if work remains, opens all three gates, and awaits
 the owned task before propagating one coordinator cancellation. This also covers
 cancellation before thread dispatch. Awaiting the task observes function return;
 the executor thread itself remains reusable until executor shutdown. Only event-loop
 callbacks mutate the trace and asyncio events; the thread uses
-`loop.call_soon_threadsafe` to communicate. Tests cover all three outcomes,
+`loop.call_soon_threadsafe` to communicate. Tests cover all four scenarios,
 coordinator cancellation before dispatch and after thread entry, and CLI exit after
 executor shutdown. Event gates establish ordering without sleeps; watchdogs detect
 hangs and do not measure latency.
 
 This is a single-checkpoint experiment with an in-memory effect notification, not
 a general cancellation API or a transaction. Checking the flag and performing an
-effect are separate operations: a stop arriving between them may still allow the
-effect. Real blocking I/O needs its own timeouts or interruption mechanism before
+effect are separate operations: the forced interleaving shows that a stop arriving
+between them can still allow the effect. Another check merely moves the remaining
+gap. Preventing an external effect requires coordination appropriate to that
+resource; a stop flag alone does not provide transaction or rollback semantics.
+Real blocking I/O needs its own timeouts or interruption mechanism before
 the worker can reach another checkpoint. Cleanup has no hard deadline, and repeated
 coordinator cancellation during cleanup is outside scope. No stop-latency or
 performance guarantee has been measured.
 
 Interview checkpoint: distinguish a stop request, worker observation, and function
-completion. Explain where checkpoints belong, why waiting for a result establishes
-ownership, and why stopping cannot roll back an external effect. A follow-up is
-connecting caller cancellation to this stop protocol while retaining ownership of
-the worker through cleanup.
+completion. Explain why a thread-safe flag does not make check-then-act atomic,
+why waiting for a result establishes ownership, and why stopping cannot roll back
+an external effect. A follow-up is studying how blocking-I/O timeouts affect a
+worker's ability to reach a stop checkpoint.
 
 ## Cleanup can fail too
 
