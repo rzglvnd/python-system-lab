@@ -592,6 +592,59 @@ why waiting for a result establishes ownership, and why stopping cannot roll bac
 an external effect. A follow-up is studying how blocking-I/O timeouts affect a
 worker's ability to reach a stop checkpoint.
 
+## Stop checkpoints after blocking socket reads
+
+Run `python socket_read_stop.py` to observe real `recv(1)` calls on a local
+`socket.socketpair()`. No external server or network credentials are needed.
+
+| Scenario | How the read returns | Stop observed | Worker result |
+| --- | --- | --- | --- |
+| `blocking_stop` | Peer shuts down its write side; `recv` returns `b""` | Yes | `stopped` |
+| `timeout_stop` | Read timeout raises `TimeoutError`; peer stays open | Yes | `stopped` |
+| `data` | Peer sends `b"X"` | No | `data` |
+| `eof` | Peer shuts down its write side; `recv` returns `b""` | No | `eof` |
+| `timeout` | Read timeout raises `TimeoutError`; peer stays open | No | `timeout` |
+
+The thread schedules a `read-ready` notification just before calling `recv`.
+In both stop scenarios, the coordinator sets a `threading.Event` while the peer's
+write side is open and the owned task remains pending. The blocking control then
+explicitly half-closes the peer to release the read through EOF. Setting the stop
+flag did not supply data, close the connection, or interrupt the socket operation.
+The notification establishes a read boundary; it does not prove that the OS had
+already suspended the thread inside `recv` when the request arrived.
+
+In `timeout_stop`, the socket has a 0.05-second per-read timeout. After each timeout
+the worker checks the flag. If the coordinator has not yet requested a stop, it
+retries the read; otherwise it returns `stopped`. This tolerates a caller delayed
+beyond the first timeout without assuming a particular scheduling order or timeout
+count. Only the terminal read notification is traced; `timeout_count` includes all
+timeouts. The peer remains open without sending data until the result is observed.
+The independent `timeout` control returns after one timeout without a stop request.
+
+Data, EOF, and timeout remain distinct observations. JSON represents received
+`b"X"` as hex `"58"`, EOF as an empty hex string, and timeout as `null` because no
+bytes were returned. The worker checks for stopping after the read returns or
+times out, before any further application processing. This cannot undo receipt of
+bytes, and it does not remove the check-to-effect race from the previous experiment.
+
+The coordinator retains and shields the task. On one coordinator cancellation,
+cleanup requests a stop, half-closes the peer if work remains, and awaits function
+return before closing either socket. Cleanup uses EOF even for a timed read; the
+normal `timeout_stop` case demonstrates stopping without that cleanup intervention.
+Tests cover all five scenarios, cancellation before dispatch and after thread
+entry, descriptor lifetime through function return, and CLI executor shutdown.
+They assert outcomes and event ordering, with watchdogs for hangs and no tight
+elapsed-time thresholds. Only event-loop callbacks mutate the trace and async
+events; the worker communicates with `loop.call_soon_threadsafe`.
+
+A per-read timeout creates opportunities for stop checks. It does not establish an
+overall operation or shutdown deadline, and repeated idle reads can continue
+indefinitely without a stop request. Timeout scheduling and total stop latency are
+not measured here. This is a one-byte local stream experiment, not a network client,
+framing protocol, or guarantee for other blocking APIs. Repeated cancellation
+during ownership cleanup remains outside scope. A useful next task is comparing
+per-read timeouts with an overall operation deadline.
+
 ## Cleanup can fail too
 
 `tests/test_taskgroup_cleanup_failure.py` starts three workers before releasing a
