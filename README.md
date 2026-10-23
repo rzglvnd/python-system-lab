@@ -645,6 +645,56 @@ framing protocol, or guarantee for other blocking APIs. Repeated cancellation
 during ownership cleanup remains outside scope. A useful next task is comparing
 per-read timeouts with an overall operation deadline.
 
+## Per-read timeouts and an overall receive deadline
+
+Run `python socket_receive_deadline.py` for local socket-pair controls covering
+completion, partial EOF, idle read timeout, and overall deadline expiry.
+`receive_exact` collects a fixed byte count in two-byte read chunks to expose
+multiple reads. Those small chunks are a lab choice, not performance tuning;
+stream sockets do not preserve the peer's send boundaries.
+
+With `total_timeout=None`, each read receives a fresh `read_timeout`. With a total
+budget, the function computes one deadline using `time.monotonic()` and gives each
+read `min(read_timeout, deadline - clock())`. Receiving bytes never resets that
+deadline. An exhausted budget starts no further read; an idle read timeout ends
+the operation rather than silently retrying. The helper restores the socket's
+original timeout on all read outcomes and unexpected socket errors. It borrows
+the caller's socket and requires exclusive use while changing its timeout.
+
+The controlled-clock comparison in `tests/test_socket_receive_deadline.py` supplies
+three two-byte chunks, each requiring 0.75 **scripted** seconds. Each read has a
+one-second timeout, and the shared deadline allows two seconds total:
+
+| Policy | Outcome | Retained bytes | Scripted time consumed |
+| --- | --- | --- | --- |
+| Fresh timeout for every read | `complete` | `ABCDEF` | 2.25 seconds |
+| One shared deadline | `deadline_expired` | `ABCD` | 2 seconds |
+
+These are deterministic simulated inputs and outcomes, not measured network
+latencies or benchmark results. The final read in the shared case receives only
+the remaining 0.5-second budget. Local socket tests separately verify real reads,
+partial EOF, timeout behavior, and leaving subsequent bytes unread after reaching
+the requested length; they do not depend on a peer trickling data on a schedule.
+
+`ReceiveReport` distinguishes `complete`, `read_timeout`, `deadline_expired`, and
+`eof`, retaining every byte consumed by successful reads. EOF before the requested
+length is not success. The deadline is checked before each read and after it
+returns or times out. At or after the deadline, expiry takes precedence over both
+completion and EOF, even if the final bytes have just arrived; the report retains
+those bytes but does not claim timely completion. A zero-byte request completes
+without touching the socket, including with a zero budget. Other zero-budget
+requests expire without reading. Unexpected socket errors propagate rather than
+being relabelled as timeouts.
+
+Tests inject a clock and a minimal socket interface for boundary cases without
+sleeps or elapsed-time assertions. Real socket controls and a CLI hang watchdog
+verify integration. The budget begins inside the helper after argument validation;
+it excludes connection setup and any earlier executor queueing. This deadline is
+a cooperative observation policy, not an exact wall-clock return guarantee or a
+thread-killing mechanism. Partial bytes are diagnostic results, not a resumable
+framing protocol. A future retry policy must explicitly decide what happens to
+consumed bytes and share the original deadline rather than resetting it.
+
 ## Cleanup can fail too
 
 `tests/test_taskgroup_cleanup_failure.py` starts three workers before releasing a
