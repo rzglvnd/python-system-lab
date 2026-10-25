@@ -104,28 +104,168 @@ def test_idle_read_timeout_preserves_partial_data(total: float | None) -> None:
     assert result.outcome == "read_timeout"
     assert result.received == b"AB"
     assert result.read_calls == 2
+    assert result.idle_retries == 0
     assert reader.gettimeout() == 7
 
 
-def test_partial_eof_is_not_success_and_restores_socket_mode() -> None:
+@pytest.mark.parametrize("retries", [0, 3])
+def test_partial_eof_is_not_success_and_restores_socket_mode(retries: int) -> None:
     clock = ControlledClock()
     reader = ScriptedSocket(clock, [(0.25, b"AB"), (0.25, b"")])
-    result = receive_exact(reader, 3, read_timeout=1, total_timeout=5, clock=clock)
+    result = receive_exact(
+        reader,
+        3,
+        read_timeout=1,
+        total_timeout=5,
+        max_idle_retries=retries,
+        clock=clock,
+    )
     assert result.outcome == "eof"
     assert result.received == b"AB"
     assert result.expected_bytes == 3
     assert reader.sizes == [2, 1]
     assert reader.gettimeout() == 7
+    assert result.idle_retries == 0
 
 
-def test_unexpected_socket_error_propagates_and_restores_timeout() -> None:
+@pytest.mark.parametrize("retries", [0, 3])
+def test_unexpected_socket_error_propagates_and_restores_timeout(retries: int) -> None:
     clock = ControlledClock()
     error = ConnectionResetError("connection reset")
     reader = ScriptedSocket(clock, [(0.0, error)])
     with pytest.raises(ConnectionResetError) as caught:
-        receive_exact(reader, 2, read_timeout=1, total_timeout=5, clock=clock)
+        receive_exact(
+            reader,
+            2,
+            read_timeout=1,
+            total_timeout=5,
+            max_idle_retries=retries,
+            clock=clock,
+        )
     assert caught.value is error
     assert reader.gettimeout() == 7
+
+
+@pytest.mark.parametrize("total", [None, 5.0])
+def test_idle_retries_preserve_partial_data_until_completion(
+    total: float | None,
+) -> None:
+    clock = ControlledClock()
+    reader = ScriptedSocket(
+        clock,
+        [
+            (0.25, b"AB"),
+            (1.0, TimeoutError("idle")),
+            (0.25, b"CD"),
+            (1.0, TimeoutError("idle")),
+            (0.25, b"EF"),
+        ],
+    )
+    result = receive_exact(
+        reader, 6, read_timeout=1, total_timeout=total, max_idle_retries=2, clock=clock
+    )
+    assert result.outcome == "complete"
+    assert result.received == b"ABCDEF"
+    assert result.read_calls == 5
+    assert result.idle_retries == 2
+    assert clock.now == 2.75
+    assert reader.gettimeout() == 7
+
+
+@pytest.mark.parametrize("retries", [0, 1, 2])
+def test_idle_retry_exhaustion_is_bounded_without_a_total_deadline(
+    retries: int,
+) -> None:
+    clock = ControlledClock()
+    steps: list[tuple[float, bytes | OSError]] = [(0.25, b"AB")]
+    steps.extend((1.0, TimeoutError("idle")) for _ in range(retries + 1))
+    reader = ScriptedSocket(clock, steps)
+    result = receive_exact(
+        reader, 4, read_timeout=1, max_idle_retries=retries, clock=clock
+    )
+    assert result.outcome == "read_timeout"
+    assert result.received == b"AB"
+    assert result.read_calls == retries + 2
+    assert result.idle_retries == retries
+    assert reader.gettimeout() == 7
+
+
+def test_progress_does_not_replenish_the_idle_retry_allowance() -> None:
+    clock = ControlledClock()
+    reader = ScriptedSocket(
+        clock,
+        [
+            (0.25, b"AB"),
+            (1.0, TimeoutError("idle")),
+            (0.25, b"CD"),
+            (1.0, TimeoutError("idle")),
+        ],
+    )
+    result = receive_exact(
+        reader, 6, read_timeout=1, total_timeout=5, max_idle_retries=1, clock=clock
+    )
+    assert result.outcome == "read_timeout"
+    assert result.received == b"ABCD"
+    assert result.read_calls == 4
+    assert result.idle_retries == 1
+
+
+@pytest.mark.parametrize("retries", [1, 3])
+def test_retry_uses_remaining_deadline_and_expiry_wins_over_retry_limit(
+    retries: int,
+) -> None:
+    clock = ControlledClock()
+    reader = ScriptedSocket(
+        clock, [(0.25, b"AB"), (1.0, TimeoutError("idle")), (2.0, b"CD")]
+    )
+    result = receive_exact(
+        reader,
+        4,
+        read_timeout=1,
+        total_timeout=2,
+        max_idle_retries=retries,
+        clock=clock,
+    )
+    assert result.outcome == "deadline_expired"
+    assert result.received == b"AB"
+    assert result.read_calls == 3
+    assert result.idle_retries == 1
+    assert clock.now == 2
+    assert reader.timeouts == [1, 1, 0.75, 7]
+
+
+def test_budget_expiring_between_timeout_and_retry_starts_no_retry() -> None:
+    clock = ControlledClock()
+    reader = ScriptedSocket(clock, [(1.0, TimeoutError("idle"))])
+
+    def delayed_clock() -> float:
+        observed = clock.now
+        if observed == 1:
+            # Simulate a scheduling delay after observing time at the timeout,
+            # before the next loop iteration can start its retry read.
+            clock.now = 2
+        return observed
+
+    result = receive_exact(
+        reader,
+        2,
+        read_timeout=1,
+        total_timeout=2,
+        max_idle_retries=3,
+        clock=delayed_clock,
+    )
+    assert result.outcome == "deadline_expired"
+    assert result.read_calls == 1
+    assert result.idle_retries == 0
+    assert reader.timeouts == [1, 7]
+
+
+@pytest.mark.parametrize("retries", [-1, True])
+def test_invalid_retry_allowances_touch_no_socket(retries: int) -> None:
+    reader = ScriptedSocket(ControlledClock(), [])
+    with pytest.raises(ValueError, match="max_idle_retries"):
+        receive_exact(reader, 2, read_timeout=1, max_idle_retries=retries)
+    assert reader.timeouts == []
 
 
 @pytest.mark.parametrize("read_timeout", [0.0, -1.0, float("inf"), float("nan"), True])
@@ -207,3 +347,8 @@ def test_cli_exercises_real_socket_completion_eof_and_timeouts() -> None:
     assert reports["partial_eof"]["outcome"] == "eof"
     assert reports["read_timeout"]["outcome"] == "read_timeout"
     assert reports["deadline_expired"]["outcome"] == "deadline_expired"
+    assert reports["retry_exhausted"]["outcome"] == "read_timeout"
+    assert reports["retry_exhausted"]["received_hex"] == b"AB".hex()
+    assert reports["retry_exhausted"]["idle_retries"] == 2
+    assert reports["deadline_with_retries"]["outcome"] == "deadline_expired"
+    assert reports["deadline_with_retries"]["idle_retries"] == 0

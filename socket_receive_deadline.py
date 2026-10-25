@@ -23,6 +23,7 @@ class ReceiveReport:
     received: bytes
     expected_bytes: int
     read_calls: int
+    idle_retries: int = 0
 
 
 def receive_exact(
@@ -31,6 +32,7 @@ def receive_exact(
     *,
     read_timeout: float,
     total_timeout: float | None = None,
+    max_idle_retries: int = 0,
     clock: Callable[[], float] = monotonic,
 ) -> ReceiveReport:
     """Receive a fixed byte count, preserving data on each terminal outcome.
@@ -56,6 +58,12 @@ def receive_exact(
         or total_timeout < 0
     ):
         raise ValueError("total_timeout must be finite and non-negative")
+    if (
+        isinstance(max_idle_retries, bool)
+        or not isinstance(max_idle_retries, int)
+        or max_idle_retries < 0
+    ):
+        raise ValueError("max_idle_retries must be a non-negative integer")
     if expected_bytes == 0:
         return ReceiveReport("complete", b"", 0, 0)
 
@@ -63,11 +71,15 @@ def receive_exact(
     original_timeout = reader.gettimeout()
     received = bytearray()
     read_calls = 0
+    idle_retries = 0
+    retry_pending = False
 
     def report(
         outcome: Literal["complete", "read_timeout", "deadline_expired", "eof"],
     ) -> ReceiveReport:
-        return ReceiveReport(outcome, bytes(received), expected_bytes, read_calls)
+        return ReceiveReport(
+            outcome, bytes(received), expected_bytes, read_calls, idle_retries
+        )
 
     try:
         while len(received) < expected_bytes:
@@ -78,13 +90,21 @@ def receive_exact(
                     return report("deadline_expired")
                 timeout = min(timeout, remaining)
             reader.settimeout(timeout)
+            if retry_pending:
+                # Count a retry only when its recv is about to start, after the
+                # deadline check. Progress never replenishes this allowance.
+                idle_retries += 1
+                retry_pending = False
             read_calls += 1
             try:
                 chunk = reader.recv(min(2, expected_bytes - len(received)))
             except TimeoutError:
                 if deadline is not None and clock() >= deadline:
                     return report("deadline_expired")
-                return report("read_timeout")
+                if idle_retries >= max_idle_retries:
+                    return report("read_timeout")
+                retry_pending = True
+                continue
             received.extend(chunk)
             # A late observation does not become success just because this read
             # supplied the final bytes. Keep every consumed byte in the report.
@@ -98,26 +118,35 @@ def receive_exact(
 
 
 def main() -> None:
-    cases: tuple[tuple[str, bytes, bool, float | None], ...] = (
-        ("per_read_complete", b"ABCDEF", False, None),
-        ("deadline_complete", b"ABCDEF", False, 5.0),
-        ("partial_eof", b"AB", True, 5.0),
-        ("read_timeout", b"AB", False, None),
-        ("deadline_expired", b"AB", False, 0.02),
+    cases: tuple[tuple[str, bytes, bool, float | None, int], ...] = (
+        ("per_read_complete", b"ABCDEF", False, None, 0),
+        ("deadline_complete", b"ABCDEF", False, 5.0, 0),
+        ("partial_eof", b"AB", True, 5.0, 0),
+        ("read_timeout", b"AB", False, None, 0),
+        ("deadline_expired", b"AB", False, 0.02, 0),
+        ("retry_exhausted", b"AB", False, None, 2),
+        ("deadline_with_retries", b"AB", False, 0.02, 3),
     )
     reports: dict[str, dict[str, object]] = {}
-    for label, payload, eof, total in cases:
+    for label, payload, eof, total, retries in cases:
         reader, peer = socket.socketpair()
         with reader, peer:
             peer.sendall(payload)
             if eof:
                 peer.shutdown(socket.SHUT_WR)
-            result = receive_exact(reader, 6, read_timeout=0.05, total_timeout=total)
+            result = receive_exact(
+                reader,
+                6,
+                read_timeout=0.05,
+                total_timeout=total,
+                max_idle_retries=retries,
+            )
             reports[label] = {
                 "outcome": result.outcome,
                 "received_hex": result.received.hex(),
                 "expected_bytes": result.expected_bytes,
                 "read_calls": result.read_calls,
+                "idle_retries": result.idle_retries,
             }
     print(json.dumps(reports, indent=2))
 

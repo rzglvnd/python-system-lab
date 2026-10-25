@@ -656,10 +656,11 @@ stream sockets do not preserve the peer's send boundaries.
 With `total_timeout=None`, each read receives a fresh `read_timeout`. With a total
 budget, the function computes one deadline using `time.monotonic()` and gives each
 read `min(read_timeout, deadline - clock())`. Receiving bytes never resets that
-deadline. An exhausted budget starts no further read; an idle read timeout ends
-the operation rather than silently retrying. The helper restores the socket's
-original timeout on all read outcomes and unexpected socket errors. It borrows
-the caller's socket and requires exclusive use while changing its timeout.
+deadline. An exhausted budget starts no further read. By default an idle read
+timeout ends the operation; bounded retries can be explicitly enabled as described
+below. The helper restores the socket's original timeout on all read outcomes and
+unexpected socket errors. It borrows the caller's socket and requires exclusive
+use while changing its timeout.
 
 The controlled-clock comparison in `tests/test_socket_receive_deadline.py` supplies
 three two-byte chunks, each requiring 0.75 **scripted** seconds. Each read has a
@@ -692,8 +693,38 @@ verify integration. The budget begins inside the helper after argument validatio
 it excludes connection setup and any earlier executor queueing. This deadline is
 a cooperative observation policy, not an exact wall-clock return guarantee or a
 thread-killing mechanism. Partial bytes are diagnostic results, not a resumable
-framing protocol. A future retry policy must explicitly decide what happens to
-consumed bytes and share the original deadline rather than resetting it.
+framing protocol.
+
+### Bounded idle-read retries
+
+`receive_exact(..., max_idle_retries=N)` allows up to `N` additional reads caused
+by idle timeouts, across the entire receive operation. The default is zero and
+preserves the original fail-on-first-timeout behavior. Successful reads do not
+replenish this allowance. Each retry continues receiving the remaining bytes on
+the same socket, preserving the accumulated buffer and original deadline. There
+is no reconnect, request replay, or retry of EOF or unexpected socket errors.
+
+`ReceiveReport.idle_retries` counts retry reads actually started. Ordinary reads
+following successful partial progress are included in `read_calls` but do not
+consume retries. An idle timeout with no allowance remaining returns `read_timeout`.
+Deadline expiry takes precedence, including when the retry limit is also reached;
+spare retries cannot extend the deadline. A budget that expires between deciding
+to retry and checking the next read starts no retry and does not increment the
+counter. The original socket timeout is restored on these paths as well.
+
+Controlled-clock tests cover timeout recovery without lost or duplicated bytes,
+exhaustion with and without intervening progress, and deadline expiry with retries
+still available. For example, after receiving `AB` in 0.25 scripted seconds, an
+idle read consumes one second. Under a two-second total budget, the next read
+receives just 0.75 seconds, then expires retaining `AB`; it cannot obtain a fresh
+two-second budget. These are simulated inputs, not measured network timings.
+The CLI also includes real socket controls for exhausting two idle retries and
+deadline expiry with three retries available.
+
+Finite retry counts bound idle retries even without a total deadline; they do
+not impose an overall completion-time guarantee when reads keep making progress.
+Retries are immediate, without backoff or jitter, and may increase resource use.
+The next experiment can show how backoff must consume the same remaining deadline.
 
 ## Cleanup can fail too
 
