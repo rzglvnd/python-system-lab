@@ -3,7 +3,7 @@ import socket
 import subprocess
 import sys
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
@@ -17,6 +17,17 @@ class ControlledClock:
 
     def __call__(self) -> float:
         return self.now
+
+
+@dataclass
+class ControlledSleeper:
+    clock: ControlledClock
+    overshoot: float = 0.0
+    calls: list[float] = field(default_factory=list)
+
+    def __call__(self, delay: float) -> None:
+        self.calls.append(delay)
+        self.clock.now += delay + self.overshoot
 
 
 class ScriptedSocket:
@@ -151,6 +162,7 @@ def test_idle_retries_preserve_partial_data_until_completion(
     total: float | None,
 ) -> None:
     clock = ControlledClock()
+    sleeper = ControlledSleeper(clock)
     reader = ScriptedSocket(
         clock,
         [
@@ -162,13 +174,20 @@ def test_idle_retries_preserve_partial_data_until_completion(
         ],
     )
     result = receive_exact(
-        reader, 6, read_timeout=1, total_timeout=total, max_idle_retries=2, clock=clock
+        reader,
+        6,
+        read_timeout=1,
+        total_timeout=total,
+        max_idle_retries=2,
+        clock=clock,
+        sleeper=sleeper,
     )
     assert result.outcome == "complete"
     assert result.received == b"ABCDEF"
     assert result.read_calls == 5
     assert result.idle_retries == 2
     assert clock.now == 2.75
+    assert sleeper.calls == []
     assert reader.gettimeout() == 7
 
 
@@ -234,8 +253,12 @@ def test_retry_uses_remaining_deadline_and_expiry_wins_over_retry_limit(
     assert reader.timeouts == [1, 1, 0.75, 7]
 
 
-def test_budget_expiring_between_timeout_and_retry_starts_no_retry() -> None:
+@pytest.mark.parametrize("backoff", [0.0, 0.25])
+def test_budget_expiring_between_timeout_and_retry_starts_no_retry(
+    backoff: float,
+) -> None:
     clock = ControlledClock()
+    sleeper = ControlledSleeper(clock)
     reader = ScriptedSocket(clock, [(1.0, TimeoutError("idle"))])
 
     def delayed_clock() -> float:
@@ -252,12 +275,210 @@ def test_budget_expiring_between_timeout_and_retry_starts_no_retry() -> None:
         read_timeout=1,
         total_timeout=2,
         max_idle_retries=3,
+        retry_backoff=backoff,
         clock=delayed_clock,
+        sleeper=sleeper,
     )
     assert result.outcome == "deadline_expired"
     assert result.read_calls == 1
     assert result.idle_retries == 0
     assert reader.timeouts == [1, 7]
+    assert sleeper.calls == []
+
+
+@pytest.mark.parametrize("total", [None, 5.0])
+def test_fixed_backoff_preserves_data_and_waits_once_per_retry(
+    total: float | None,
+) -> None:
+    clock = ControlledClock()
+    sleeper = ControlledSleeper(clock)
+    reader = ScriptedSocket(
+        clock,
+        [
+            (0.25, b"AB"),
+            (1.0, TimeoutError("idle")),
+            (0.25, b"CD"),
+            (1.0, TimeoutError("idle")),
+            (0.25, b"EF"),
+        ],
+    )
+    result = receive_exact(
+        reader,
+        6,
+        read_timeout=1,
+        total_timeout=total,
+        max_idle_retries=2,
+        retry_backoff=0.25,
+        clock=clock,
+        sleeper=sleeper,
+    )
+    assert result.outcome == "complete"
+    assert result.received == b"ABCDEF"
+    assert result.read_calls == 5
+    assert result.idle_retries == 2
+    assert sleeper.calls == [0.25, 0.25]
+    assert clock.now == 3.25
+    assert reader.gettimeout() == 7
+
+
+def test_backoff_reduces_the_next_read_budget() -> None:
+    clock = ControlledClock()
+    sleeper = ControlledSleeper(clock)
+    reader = ScriptedSocket(
+        clock, [(0.25, b"AB"), (1.0, TimeoutError("idle")), (1.0, b"CD")]
+    )
+    result = receive_exact(
+        reader,
+        4,
+        read_timeout=1,
+        total_timeout=2,
+        max_idle_retries=3,
+        retry_backoff=0.25,
+        clock=clock,
+        sleeper=sleeper,
+    )
+    assert result.outcome == "deadline_expired"
+    assert result.received == b"AB"
+    assert result.read_calls == 3
+    assert result.idle_retries == 1
+    assert reader.timeouts == [1, 1, 0.5, 7]
+    assert sleeper.calls == [0.25]
+    assert clock.now == 2
+
+
+def test_backoff_is_capped_by_remaining_budget_and_starts_no_expired_retry() -> None:
+    clock = ControlledClock()
+    sleeper = ControlledSleeper(clock)
+    reader = ScriptedSocket(clock, [(0.25, b"AB"), (1.0, TimeoutError("idle"))])
+    result = receive_exact(
+        reader,
+        4,
+        read_timeout=1,
+        total_timeout=2,
+        max_idle_retries=3,
+        retry_backoff=1,
+        clock=clock,
+        sleeper=sleeper,
+    )
+    assert result.outcome == "deadline_expired"
+    assert result.received == b"AB"
+    assert result.read_calls == 2
+    assert result.idle_retries == 0
+    assert sleeper.calls == [0.75]
+    assert clock.now == 2
+    assert reader.timeouts == [1, 1, 7]
+
+
+@pytest.mark.parametrize("overshoot", [0.5, 0.75])
+def test_sleeper_overshoot_cannot_start_a_retry_past_the_deadline(
+    overshoot: float,
+) -> None:
+    clock = ControlledClock()
+    sleeper = ControlledSleeper(clock, overshoot=overshoot)
+    reader = ScriptedSocket(clock, [(0.25, b"AB"), (1.0, TimeoutError("idle"))])
+    result = receive_exact(
+        reader,
+        4,
+        read_timeout=1,
+        total_timeout=2,
+        max_idle_retries=3,
+        retry_backoff=0.25,
+        clock=clock,
+        sleeper=sleeper,
+    )
+    assert result.outcome == "deadline_expired"
+    assert result.received == b"AB"
+    assert result.read_calls == 2
+    assert result.idle_retries == 0
+    assert sleeper.calls == [0.25]
+    assert clock.now == 1.5 + overshoot
+    assert reader.gettimeout() == 7
+
+
+@pytest.mark.parametrize("terminal", ["complete", "eof", "read_timeout"])
+def test_terminal_outcomes_do_not_wait_for_backoff(terminal: str) -> None:
+    clock = ControlledClock()
+    sleeper = ControlledSleeper(clock)
+    chunk: bytes | OSError = (
+        b"AB"
+        if terminal == "complete"
+        else b""
+        if terminal == "eof"
+        else TimeoutError("idle")
+    )
+    reader = ScriptedSocket(clock, [(0.0, chunk)])
+    result = receive_exact(
+        reader,
+        2,
+        read_timeout=1,
+        total_timeout=5,
+        max_idle_retries=0,
+        retry_backoff=1,
+        clock=clock,
+        sleeper=sleeper,
+    )
+    assert result.outcome == terminal
+    assert result.idle_retries == 0
+    assert sleeper.calls == []
+
+
+def test_retry_exhaustion_performs_no_final_backoff() -> None:
+    clock = ControlledClock()
+    sleeper = ControlledSleeper(clock)
+    reader = ScriptedSocket(
+        clock, [(0.25, b"AB"), (1.0, TimeoutError("idle")), (1.0, TimeoutError("idle"))]
+    )
+    result = receive_exact(
+        reader,
+        4,
+        read_timeout=1,
+        max_idle_retries=1,
+        retry_backoff=0.25,
+        clock=clock,
+        sleeper=sleeper,
+    )
+    assert result.outcome == "read_timeout"
+    assert result.received == b"AB"
+    assert result.idle_retries == 1
+    assert sleeper.calls == [0.25]
+    assert clock.now == 2.5
+    assert reader.gettimeout() == 7
+
+
+def test_sleeper_failure_propagates_and_restores_socket_timeout() -> None:
+    clock = ControlledClock()
+    reader = ScriptedSocket(clock, [(0.25, b"AB"), (1.0, TimeoutError("idle"))])
+    error = TimeoutError("sleeper failed")
+
+    def fail_sleep(delay: float) -> None:
+        assert delay == 0.25
+        raise error
+
+    with pytest.raises(TimeoutError) as caught:
+        receive_exact(
+            reader,
+            4,
+            read_timeout=1,
+            total_timeout=5,
+            max_idle_retries=1,
+            retry_backoff=0.25,
+            clock=clock,
+            sleeper=fail_sleep,
+        )
+    assert caught.value is error
+    assert len(reader.sizes) == 2
+    assert reader.gettimeout() == 7
+
+
+@pytest.mark.parametrize("backoff", [-1.0, float("inf"), float("nan"), True])
+def test_invalid_backoff_touches_no_socket_and_performs_no_wait(backoff: float) -> None:
+    clock = ControlledClock()
+    sleeper = ControlledSleeper(clock)
+    reader = ScriptedSocket(clock, [])
+    with pytest.raises(ValueError, match="retry_backoff"):
+        receive_exact(reader, 2, read_timeout=1, retry_backoff=backoff, sleeper=sleeper)
+    assert reader.timeouts == []
+    assert sleeper.calls == []
 
 
 @pytest.mark.parametrize("retries", [-1, True])
@@ -293,12 +514,24 @@ def test_invalid_sizes_touch_no_socket(size: int) -> None:
 
 
 def test_zero_bytes_complete_without_a_read_even_with_zero_budget() -> None:
-    reader = ScriptedSocket(ControlledClock(), [])
-    result = receive_exact(reader, 0, read_timeout=1, total_timeout=0)
+    clock = ControlledClock()
+    reader = ScriptedSocket(clock, [])
+    sleeper = ControlledSleeper(clock)
+    result = receive_exact(
+        reader,
+        0,
+        read_timeout=1,
+        total_timeout=0,
+        max_idle_retries=3,
+        retry_backoff=1,
+        clock=clock,
+        sleeper=sleeper,
+    )
     assert result.outcome == "complete"
     assert result.received == b""
     assert result.read_calls == 0
     assert reader.timeouts == []
+    assert sleeper.calls == []
 
 
 @pytest.mark.parametrize("total", [None, 5.0])
@@ -352,3 +585,5 @@ def test_cli_exercises_real_socket_completion_eof_and_timeouts() -> None:
     assert reports["retry_exhausted"]["idle_retries"] == 2
     assert reports["deadline_with_retries"]["outcome"] == "deadline_expired"
     assert reports["deadline_with_retries"]["idle_retries"] == 0
+    assert reports["backoff_deadline"]["outcome"] == "deadline_expired"
+    assert reports["backoff_deadline"]["idle_retries"] == 0

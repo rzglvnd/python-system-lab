@@ -5,7 +5,7 @@ import math
 import socket
 from collections.abc import Callable
 from dataclasses import dataclass
-from time import monotonic
+from time import monotonic, sleep
 from typing import Literal, Protocol
 
 
@@ -33,7 +33,9 @@ def receive_exact(
     read_timeout: float,
     total_timeout: float | None = None,
     max_idle_retries: int = 0,
+    retry_backoff: float = 0.0,
     clock: Callable[[], float] = monotonic,
+    sleeper: Callable[[float], None] = sleep,
 ) -> ReceiveReport:
     """Receive a fixed byte count, preserving data on each terminal outcome.
 
@@ -64,6 +66,12 @@ def receive_exact(
         or max_idle_retries < 0
     ):
         raise ValueError("max_idle_retries must be a non-negative integer")
+    if (
+        isinstance(retry_backoff, bool)
+        or not math.isfinite(retry_backoff)
+        or retry_backoff < 0
+    ):
+        raise ValueError("retry_backoff must be finite and non-negative")
     if expected_bytes == 0:
         return ReceiveReport("complete", b"", 0, 0)
 
@@ -83,6 +91,16 @@ def receive_exact(
 
     try:
         while len(received) < expected_bytes:
+            if retry_pending and retry_backoff > 0:
+                delay = retry_backoff
+                if deadline is not None:
+                    remaining = deadline - clock()
+                    if remaining <= 0:
+                        return report("deadline_expired")
+                    delay = min(delay, remaining)
+                sleeper(delay)
+                # Recompute the read budget below, even if the sleeper returned
+                # late. Backoff never starts a new operation deadline.
             timeout = read_timeout
             if deadline is not None:
                 remaining = deadline - clock()
@@ -118,17 +136,18 @@ def receive_exact(
 
 
 def main() -> None:
-    cases: tuple[tuple[str, bytes, bool, float | None, int], ...] = (
-        ("per_read_complete", b"ABCDEF", False, None, 0),
-        ("deadline_complete", b"ABCDEF", False, 5.0, 0),
-        ("partial_eof", b"AB", True, 5.0, 0),
-        ("read_timeout", b"AB", False, None, 0),
-        ("deadline_expired", b"AB", False, 0.02, 0),
-        ("retry_exhausted", b"AB", False, None, 2),
-        ("deadline_with_retries", b"AB", False, 0.02, 3),
+    cases: tuple[tuple[str, bytes, bool, float | None, int, float], ...] = (
+        ("per_read_complete", b"ABCDEF", False, None, 0, 0.0),
+        ("deadline_complete", b"ABCDEF", False, 5.0, 0, 0.0),
+        ("partial_eof", b"AB", True, 5.0, 0, 0.0),
+        ("read_timeout", b"AB", False, None, 0, 0.0),
+        ("deadline_expired", b"AB", False, 0.02, 0, 0.0),
+        ("retry_exhausted", b"AB", False, None, 2, 0.0),
+        ("deadline_with_retries", b"AB", False, 0.02, 3, 0.0),
+        ("backoff_deadline", b"AB", False, 0.15, 3, 0.2),
     )
     reports: dict[str, dict[str, object]] = {}
-    for label, payload, eof, total, retries in cases:
+    for label, payload, eof, total, retries, backoff in cases:
         reader, peer = socket.socketpair()
         with reader, peer:
             peer.sendall(payload)
@@ -140,6 +159,7 @@ def main() -> None:
                 read_timeout=0.05,
                 total_timeout=total,
                 max_idle_retries=retries,
+                retry_backoff=backoff,
             )
             reports[label] = {
                 "outcome": result.outcome,

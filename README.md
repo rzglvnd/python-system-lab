@@ -723,8 +723,41 @@ deadline expiry with three retries available.
 
 Finite retry counts bound idle retries even without a total deadline; they do
 not impose an overall completion-time guarantee when reads keep making progress.
-Retries are immediate, without backoff or jitter, and may increase resource use.
-The next experiment can show how backoff must consume the same remaining deadline.
+Retries are immediate by default and may increase resource use. A fixed backoff
+can be enabled explicitly; no jitter or exponential policy is included.
+
+### Backoff consumes the same deadline
+
+`receive_exact(..., max_idle_retries=N, retry_backoff=seconds)` requests a fixed
+wait before each allowed idle-read retry. `retry_backoff` defaults to zero, which
+does not call the sleeper and preserves immediate retries. Only an eligible idle
+timeout schedules a wait; successful progress, EOF, unexpected read errors, and
+exhausted retry allowances do not schedule one.
+
+With a total deadline, each wait requests
+`min(retry_backoff, deadline - clock())`. The helper checks for expiry before the
+wait and recomputes the remaining read budget afterward. Waiting never resets
+the original deadline. If backoff consumes the remaining budget, or the sleeper
+overshoots it, the result is `deadline_expired` with the consumed bytes retained
+and no additional read or retry counted. Sleeper errors propagate while the
+socket's original timeout is restored; they are not classified as socket timeouts.
+
+For example, after receiving `AB` in 0.25 scripted seconds and waiting one second
+for an idle read, a two-second operation has 0.75 seconds remaining. A 0.25-second
+backoff leaves just 0.5 seconds for the retry read. A one-second backoff is capped
+at 0.75 seconds and leaves no time for a retry. Controlled-clock tests cover both
+cases, completion after backoff, sleep overshoot, exhaustion, and sleeper failure.
+These are simulated inputs, not timing measurements. The CLI includes a local
+socket control with backoff configured to consume its remaining deadline.
+
+The default sleeper is `time.sleep`. Tests inject a sleeper that advances the same
+controlled clock as the scripted reads; no real sleeps or tight elapsed-time
+assertions are needed for the policy tests. A real sleeper may overshoot, so the
+requested delay is not an exact return-time guarantee. This synchronous helper
+blocks its calling thread during backoff and should not run directly on an async
+event-loop thread. Backoff adds latency; no throughput or load-reduction benefit
+has been measured here. These findings can next be consolidated into a concise
+engineering case study.
 
 ## Cleanup can fail too
 
